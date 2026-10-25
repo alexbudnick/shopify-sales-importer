@@ -4,7 +4,7 @@ Independent Railway Function in the existing Shopify Sales Importer project. The
 
 ## Status
 
-Service created and credentials configured by Railway references. Public domain creation requires explicit approval; it has not been enabled. Local tests cover authentication, signature/size validation, bounded request streams, preserving attachments, repeated/concurrent uploads, interrupted uploads and escaped searches. Runtime logs report read-only credential preflights. A live upload must be verified after the endpoint is enabled.
+Service deployed successfully and credentials configured by Railway references. Live read-only preflights pass for finance, sourcing purchases and sourcing receipts (HTTP 200). Inventory credential inherited from the sales importer is rejected by Airtable (HTTP 401); inventory uploads remain blocked until a valid credential is configured. The attempt to remap it to the finance PAT was rejected by automatic approval review and was not applied. Public domain creation requires explicit approval; it has not been enabled. Local tests cover authentication, signature/size validation, bounded request streams, preserving attachments, repeated/concurrent uploads, interrupted uploads and escaped searches. Runtime logs report read-only credential preflights. A live upload must be verified after the endpoint is enabled.
 
 ## Configuration
 
