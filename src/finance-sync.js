@@ -279,6 +279,7 @@ export async function gxeOrders(env,start){
 let running=false;
 export async function runFinanceSync(env=process.env){
   if(running)return {busy:true};running=true;
+  console.log('FINANCE_STAGE','Starting finance access and duplicate-key checks');
   const token=env.FINANCE_AIRTABLE_PAT||env.SALES_AIRTABLE_PAT;
   const start=env.FINANCE_START_DATE||'2026-01-01T00:00:00-05:00';
   const report={sources:{},errors:[]};
@@ -289,9 +290,11 @@ export async function runFinanceSync(env=process.env){
     // Access and existing-key audit must pass before contacting sales providers or writing rows.
     const existing=uniqueIndex(await at.all(TABLES.orders),'Order Key');
     const lineIndex=uniqueIndex(await at.all(TABLES.lines),'Line Key');
+    console.log('FINANCE_STAGE','Starting sourcing receipt and cash mirror');
     try{report.sources.Receipts=await syncReceipts(at,env);}catch(e){report.errors.push(`Receipts: ${e.message}`);}
     for(const source of ['Shopify','Reverb MAIN','Reverb WAREHOUSE','Gear Exchange']){
       try{
+        console.log('FINANCE_STAGE',source,'reading provider');
         const raw=source==='Shopify'?await shopifyOrders(env,start):source==='Gear Exchange'?await gxeOrders(env,start):await reverbOrders(env,source.split(' ')[1],start);
         const entries=raw.map(o=>source==='Shopify'?normalizeShopify(o):source==='Gear Exchange'?normalizeGxe(o):normalizeReverb(o,source.split(' ')[1]));
         const batch=new Map();for(const n of entries){const key=n.fields['Order Key'];if(batch.has(key)&&hash(batch.get(key).fields)!==hash(n.fields))throw Error('Conflicting duplicate provider order');batch.set(key,n);}
@@ -302,9 +305,11 @@ export async function runFinanceSync(env=process.env){
         const lines=[...batch.values()].flatMap(n=>n.lines.map(l=>({...l,Order:[fresh.get(l['Order Key']).id]})));
         const changedLines=changedRows(lines,lineIndex,'Line Key');await at.upsert(TABLES.lines,'Line Key',changedLines);
         report.sources[source]={read:raw.length,ordersWritten:changed.length,linesWritten:changedLines.length,...(raw.coverage?{coverage:raw.coverage}:{})};
+        console.log('FINANCE_STAGE',source,JSON.stringify(report.sources[source]));
       }catch(e){report.errors.push(`${source}: ${e.message}`);}
     }
     try{
+      console.log('FINANCE_STAGE','PayPal activity and payment grouping');
       const current=uniqueIndex(await at.all(TABLES.paypal),'Transaction Key');
       const raw=await paypalActivity(env,start),dedup=new Map();for(const r of raw){const f=normalizePayPal(r);dedup.set(f['Transaction Key'],f);}
       const changed=changedRows([...dedup.values()],current,'Transaction Key');await at.upsert(TABLES.paypal,'Transaction Key',changed);
