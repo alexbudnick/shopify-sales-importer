@@ -66,6 +66,57 @@ export function normalizePayPal(d) {
   if(!id||!code)throw Error('PayPal activity missing identity');
   return compact({'Transaction Key':`PAYPAL:${id}:${code}`,'Transaction ID':String(id),'Date':businessDate(t.transaction_initiation_date),'Event Code':code,'Status':t.transaction_status||'','Currency':t.transaction_amount?.currency_code||'','Gross Amount':money(t.transaction_amount),'Fee Amount':money(t.fee_amount),'Invoice ID':String(t.invoice_id||''),'Reference ID':String(t.paypal_reference_id||''),'Description':String(t.transaction_subject||t.transaction_note||'').slice(0,3000)});
 }
+export function classifyPayPal(f,all=new Map()){
+  const gross=money(f['Gross Amount'])||0,code=f['Event Code']||'',desc=f['Report Description']||'',name=f['Report Counterparty']||'';
+  if(gross>0&&/webbank/i.test(name))return ['Loan proceeds','Financing, not a customer sale.'];
+  if(/BML|Transfer To BML/i.test(desc))return ['Credit financing','Credit movement, not sales or a second purchase.'];
+  if(/Deposit|Withdrawal/i.test(desc))return ['Account transfer','Funding or withdrawal; do not count as sales or a second expense.'];
+  if((desc==='Payment Refund'||code==='T1107')&&gross<0){const original=all.get(f['Reference ID']);return ['Customer refund',original?`Refund links to original payment ${f['Reference ID']}; retain refund transaction date.`:'Refund needs original-payment review.'];}
+  if(desc==='Payment Refund'&&gross>0)return ['Purchase refund','Refund received on an outgoing payment, not customer sales.'];
+  if(gross>0&&(desc==='POS Payment'||code==='T0018')&&f.Status==='S')return ['Show POS sale','POS identifier verified against uploaded PayPal report.'];
+  if(gross>0&&/^\d{4}$/.test(f['Invoice ID']||'')&&(desc==='Express Checkout Payment'||code==='T0006')&&f.Status==='S')return ['Invoice payment','Payment on invoice; group repeated invoice numbers instead of counting each installment as an order.'];
+  if(gross<0)return ['Payment sent — review','Review business/personal use and bank/card overlap before treating as expense.'];
+  return ['Other incoming — review','Cannot establish a direct business sale from payment type alone.'];
+}
+export function paypalOrderGroups(activityRows){
+  const byTxn=new Map(activityRows.map(r=>[r.fields['Transaction ID'],r.fields])),groups=new Map();
+  for(const r of activityRows){const f=r.fields,[kind]=classifyPayPal(f,byTxn);let key;
+    if(kind==='Show POS sale')key=`PAYPAL-POS:${f['Transaction ID']}`;
+    else if(kind==='Invoice payment')key=`PAYPAL-INVOICE:${f['Invoice ID']}`;
+    else if(kind==='Customer refund'){
+      const parent=byTxn.get(f['Reference ID']);if(!parent)continue;const [parentKind]=classifyPayPal(parent,byTxn);
+      if(parentKind==='Invoice payment')key=`PAYPAL-INVOICE:${parent['Invoice ID']}`;
+      else if(parentKind==='Show POS sale')key=`PAYPAL-POS:${parent['Transaction ID']}`;
+    }
+    if(!key)continue;
+    if(!groups.has(key))groups.set(key,[]);groups.get(key).push(r);
+  }
+  return [...groups].map(([key,rows])=>{
+    const payments=rows.filter(r=>r.fields['Gross Amount']>0),refunds=rows.filter(r=>r.fields['Gross Amount']<0);
+    if(!payments.length)return null;
+    const first=payments[0].fields,isPos=key.startsWith('PAYPAL-POS:'),currencies=new Set(rows.map(r=>r.fields.Currency));
+    const warning=['Invoice/POS source payment summary: verify original order, tax, items and cross-channel duplication before inclusion.'];
+    if(payments.length>1)warning.push(`${payments.length} payments on this invoice; not separate orders. Use activity dates for cash receipt reporting.`);
+    if(refunds.length)warning.push('Refunds included in grouped order; activity dates preserve refund timing separately.');
+    if(currencies.size!==1)warning.push('Mixed currency: do not aggregate into USD.');
+    const verified=rows.every(r=>r.fields['Report Match']==='Matched — ID, gross, fee and currency');
+    if(!verified)warning.push('New API-only activity awaits report/tax verification.');
+    const subtotal=verified?sum(payments.map(r=>r.fields['Gross Amount']-r.fields['Report Shipping']-r.fields['Report Tax'])):null;
+    const fields=compact({'Order Key':key,'Order ID':isPos?first['Transaction ID']:first['Invoice ID'],'Sales Channel':isPos?'PayPal — Show POS':'PayPal — Invoices','Payment Method':'PayPal','Status':'Payments received — order review pending','Order Date':payments.map(r=>r.fields.Date).sort()[0],'Paid At':payments.map(r=>r.fields.Date).sort().at(-1),'Currency':currencies.size===1?first.Currency:null,'Items Subtotal':subtotal,'Shipping Charged':verified?sum(payments.map(r=>r.fields['Report Shipping'])):null,'Tax Collected':verified?sum(payments.map(r=>r.fields['Report Tax'])):null,'Refund Amount':verified?-sum(refunds.map(r=>r.fields['Gross Amount']-r.fields['Report Tax'])):null,'Processing Fees':-sum(rows.map(r=>r.fields['Fee Amount'])),'Platform Fees':0,'Fee Status':verified?'Verified':'Source payment fees; tax verification pending','Import Source':'PayPal grouped payments','Receipt Basis':`${payments.length} payment(s), ${refunds.length} refund(s). Order date is first receipt, not verified invoice issue date.`,'Import Warnings':warning.join('\n')});
+    return {fields,report:'Needs review',lines:[],activityIds:rows.map(r=>r.id)};
+  }).filter(Boolean);
+}
+async function linkPayPalOrders(at){
+  const rows=await at.all(TABLES.paypal),byTxn=new Map(rows.map(r=>[r.fields['Transaction ID'],r.fields]));
+  const classified=rows.map(r=>{const [kind,note]=classifyPayPal(r.fields,byTxn);return {'Transaction Key':r.fields['Transaction Key'],'Activity Class':kind,'Classification Note':note};});
+  await at.upsert(TABLES.paypal,'Transaction Key',changedRows(classified,uniqueIndex(rows,'Transaction Key'),'Transaction Key'));
+  const existing=uniqueIndex(await at.all(TABLES.orders),'Order Key'),groups=paypalOrderGroups(rows);
+  const updates=changedRows(groups.map(n=>mergeOrder(existing.get(n.fields['Order Key']),n)),existing,'Order Key');
+  await at.upsert(TABLES.orders,'Order Key',updates);
+  const fresh=uniqueIndex(await at.all(TABLES.orders),'Order Key'),links=groups.flatMap(n=>n.activityIds.map(id=>({'Transaction Key':rows.find(r=>r.id===id).fields['Transaction Key'],'Related Sales Order':[fresh.get(n.fields['Order Key']).id]})));
+  await at.upsert(TABLES.paypal,'Transaction Key',changedRows(links,uniqueIndex(rows,'Transaction Key'),'Transaction Key'));
+  return {orders:groups.length,ordersWritten:updates.length};
+}
 export function normalizeGxe(o){
   if(!/^\d+$/.test(String(o.orderId)))throw Error('GXE order missing ID');
   const key=`GXE:${o.orderId}`,warnings=['Verify GXE USD currency and quantity against order. Hyperwallet settlement fees not imported.'];
@@ -181,8 +232,11 @@ export async function shopifyOrders(env,start){
   if(!/^[a-z0-9-]+\.myshopify\.com$/i.test(host))throw Error('Invalid Shopify host');
   const {data:auth}=await request(`https://${host}/admin/oauth/access_token`,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'client_credentials',client_id:env.SHOPIFY_CLIENT_ID,client_secret:env.SHOPIFY_CLIENT_SECRET})},'Shopify auth');
   if(!auth.access_token)throw Error('Shopify auth: missing access token');
+  let readAllOrders=null;
+  try{const {data}=await request(`https://${host}/admin/oauth/access_scopes.json`,{headers:{'X-Shopify-Access-Token':auth.access_token}},'Shopify access scopes');readAllOrders=Array.isArray(data.access_scopes)?data.access_scopes.some(s=>s.handle==='read_all_orders'):null;}catch{}
   let url=`https://${host}/admin/api/${env.SHOPIFY_API_VERSION||'2026-01'}/orders.json?status=any&limit=250&created_at_min=${encodeURIComponent(start)}`,all=[],pages=0;
   while(url){if(++pages>100)throw Error('Shopify page limit: incomplete import');const u=new URL(url);if(u.host!==host)throw Error('Unsafe Shopify pagination URL');const r=await request(url,{headers:{'X-Shopify-Access-Token':auth.access_token}},'Shopify orders');if(!Array.isArray(r.data.orders))throw Error('Shopify orders: unexpected response');all.push(...r.data.orders);url=r.headers.get('link')?.match(/<([^>]+)>; rel="next"/)?.[1]||null;await pause(550);}
+  all.coverage={readAllOrders,oldestOrder:all.map(o=>businessDate(o.created_at)).filter(Boolean).sort()[0]||null};
   return all;
 }
 async function reverbOrders(env,shop,start){
@@ -247,14 +301,15 @@ export async function runFinanceSync(env=process.env){
         const fresh=uniqueIndex(await at.all(TABLES.orders),'Order Key');
         const lines=[...batch.values()].flatMap(n=>n.lines.map(l=>({...l,Order:[fresh.get(l['Order Key']).id]})));
         const changedLines=changedRows(lines,lineIndex,'Line Key');await at.upsert(TABLES.lines,'Line Key',changedLines);
-        report.sources[source]={read:raw.length,ordersWritten:changed.length,linesWritten:changedLines.length};
+        report.sources[source]={read:raw.length,ordersWritten:changed.length,linesWritten:changedLines.length,...(raw.coverage?{coverage:raw.coverage}:{})};
       }catch(e){report.errors.push(`${source}: ${e.message}`);}
     }
     try{
       const current=uniqueIndex(await at.all(TABLES.paypal),'Transaction Key');
       const raw=await paypalActivity(env,start),dedup=new Map();for(const r of raw){const f=normalizePayPal(r);dedup.set(f['Transaction Key'],f);}
       const changed=changedRows([...dedup.values()],current,'Transaction Key');await at.upsert(TABLES.paypal,'Transaction Key',changed);
-      report.sources.PayPal={read:raw.length,unique:dedup.size,written:changed.length,reporting:'Review only — no automatic sales classification'};
+      const grouped=await linkPayPalOrders(at);
+      report.sources.PayPal={read:raw.length,unique:dedup.size,written:changed.length,...grouped,reporting:'Payment summaries — order review required'};
     }catch(e){report.errors.push(`PayPal: ${e.message}`);}
     await at.create(TABLES.log,{'Run ID':`FINANCE-${new Date().toISOString()}`,'Source':'Finance sync','Run Date':new Date().toISOString().slice(0,10),'Status':report.errors.length?'Needs attention':'Imported — review pending','Records Read':Object.values(report.sources).reduce((a,s)=>a+s.read,0),'Records Written':Object.values(report.sources).reduce((a,s)=>a+(s.ordersWritten||s.written||0),0),'Errors':JSON.stringify(report)});
   }catch(e){report.errors.push(e.message);}
