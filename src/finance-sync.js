@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
 const BASE = 'app7b0v3wEXudVmkD';
-const TABLES = {orders:'tblJF93j14JRV8d5y', lines:'tbl5Mpv86jeCfnhcL', paypal:'tblLfxT9f4TQmXYWw', log:'tblXWcjKT4Tld5ySw'};
+const TABLES = {orders:'tblJF93j14JRV8d5y', lines:'tbl5Mpv86jeCfnhcL', paypal:'tblLfxT9f4TQmXYWw', log:'tblXWcjKT4Tld5ySw',receipts:'tblblwbHmUit1mg3Z',bank:'tbllyk6vCuaP2wYiF',accounts:'tblRzEqOfqQzbrY8h'};
 const pause = ms => new Promise(resolve => setTimeout(resolve,ms));
 export function money(value) {
   if (value === null || value === undefined || value === '') return null;
@@ -11,6 +11,7 @@ export function money(value) {
 }
 export function businessDate(value) {
   if (!value || !Number.isFinite(Date.parse(value))) return null;
+  if(/^\d{4}-\d{2}-\d{2}$/.test(value))return value;
   const p=new Intl.DateTimeFormat('en-US',{timeZone:'America/New_York',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(new Date(value));
   const get=t=>p.find(x=>x.type===t).value;
   return `${get('year')}-${get('month')}-${get('day')}`;
@@ -65,6 +66,87 @@ export function normalizePayPal(d) {
   if(!id||!code)throw Error('PayPal activity missing identity');
   return compact({'Transaction Key':`PAYPAL:${id}:${code}`,'Transaction ID':String(id),'Date':businessDate(t.transaction_initiation_date),'Event Code':code,'Status':t.transaction_status||'','Currency':t.transaction_amount?.currency_code||'','Gross Amount':money(t.transaction_amount),'Fee Amount':money(t.fee_amount),'Invoice ID':String(t.invoice_id||''),'Reference ID':String(t.paypal_reference_id||''),'Description':String(t.transaction_subject||t.transaction_note||'').slice(0,3000)});
 }
+export function normalizeGxe(o){
+  if(!/^\d+$/.test(String(o.orderId)))throw Error('GXE order missing ID');
+  const key=`GXE:${o.orderId}`,warnings=['Verify GXE USD currency and quantity against order. Hyperwallet settlement fees not imported.'];
+  const subtotal=money(o.soldPrice),shipping=money(o.shippingAmount),tax=money(o.taxAmount),total=money(o.totalAmount);
+  if([subtotal,shipping,tax,total].some(v=>v===null)||Math.abs((subtotal||0)+(shipping||0)+(tax||0)-(total||0))>0.02)warnings.push('Source order amounts do not reconcile.');
+  const status=String(o.status||''),paid=['Awaiting Shipping','Label Created','Tracking Provided','In Transit','Delivered','Picked Up','Payout Complete'].includes(status);
+  const fields=compact({'Order Key':key,'Order ID':String(o.orderId),'Sales Channel':'Gear Exchange','Payment Method':'Hyperwallet','Status':status,'Order Date':businessDate(o.soldAt),'Currency':o.currency||'USD','Items Subtotal':subtotal,'Shipping Charged':shipping,'Tax Collected':tax,'Import Source':'Gear Exchange API','Fee Status':'Missing — reconcile Hyperwallet settlement fees','Import Warnings':warnings.join('\n')});
+  return {fields,report:paid?'Needs review':/cancel|refund/i.test(status)?'Cancelled — excluded':'Unpaid — excluded',lines:[compact({'Line Key':`${key}:item`,'Order Key':key,'SKU':String(o.sku||''),'Item':String(o.title||o.listingTitle||''),'Quantity':Number(o.quantity)||1,'Sale Amount':subtotal,'Cost Status':'Not snapshotted — do not infer profit'})]};
+}
+export function normalizeReceipt(r,events=new Map()){
+  const f=r.fields,payer=String(f['Payment Method']||'');
+  const amount=money(f['Original Amount']??f['JPY Amount']);
+  const currency=f.Currency||(money(f['JPY Amount'])!==null?'JPY':null);
+  const attachments=(f.Receipt||[]).map(a=>({url:a.url,filename:a.filename}));
+  const fields=compact({'Purchase ID':`SRC-${r.id}`,'Sourcing Record ID':r.id,'Purchase Date':f.Date||null,'Vendor':String(f['Vendor / Payee']||''),'Currency':currency,'Original Amount':amount,'Estimated USD':money(f['USD Estimated']),'Payment Account':payer,'Expense Source':/^Chase/.test(payer)?'Chase bank accounts + cards':/^(Amex|Delta Amex)$/.test(payer)?'Amex':/^Cash/.test(payer)?'Cash':'Other','Event ID':(f['Trip / Event']||[]).map(id=>events.get(id)||id).join(', '),'Expense Category':String(f['Expense Category']||''),'Source Record URL':`https://airtable.com/appyiRn4kLqU03S1i/tbln41baCj2Mhkz3u/${r.id}`});
+  // Only attach when the source has attachments. Removing a source file must not destroy finance evidence.
+  if(attachments.length)fields.Receipt=attachments;
+  if(money(f['USD Actual'])!==null)fields['Settled USD']=money(f['USD Actual']);
+  const fingerprint=hash({...fields,Receipt:(f.Receipt||[]).map(a=>a.id)});
+  return {fields,fingerprint};
+}
+export function normalizeCashShow(r,events=new Map()){
+  const f=r.fields;
+  if(String(f.Type||'').toLowerCase()!=='sale'||String(f['Payment Method']||'').toLowerCase()!=='cash')return null;
+  const warnings=[],subtotal=money(f['Sale Amount USD']),tax=money(f['Tax Collected USD']),cash=money(f['Cash Received USD']);
+  if(!f.Date)warnings.push('Missing sale date');
+  if(tax===null)warnings.push('Enter tax explicitly, including 0 when applicable.');
+  if(subtotal===null||cash===null||Math.abs((subtotal||0)+(tax||0)-(cash||0))>0.01)warnings.push('Cash received must reconcile to sale amount plus tax.');
+  if(f['Trade Group ID'])warnings.push('Trade: do not count trade value as cash sales.');
+  const key=`SHOW-CASH:${r.id}`;
+  const fields=compact({'Order Key':key,'Order ID':r.id,'Sales Channel':'Cash from shows','Payment Method':'Cash','Status':'Cash sale — source entry','Order Date':f.Date||null,'Currency':'USD','Items Subtotal':subtotal,'Shipping Charged':0,'Tax Collected':tax,'Refund Amount':0,'Platform Fees':0,'Processing Fees':0,'Fee Status':'Verified','Import Source':'Sourcing show cash entry','Event ID':(f['Trip / Event']||[]).map(id=>events.get(id)||id).join(', '),'Source URL':`https://airtable.com/appyiRn4kLqU03S1i/tblJ9QtpEFi1efOgl/${r.id}`,'Import Warnings':warnings.join('\n')});
+  return {fields,report:'Needs review',lines:[compact({'Line Key':`${key}:item`,'Order Key':key,'SKU':String(f.SKU||''),'Item':'Show cash sale','Quantity':Number(f.Quantity)||1,'Sale Amount':subtotal,'Cost Status':'Not snapshotted — do not infer profit'})]};
+}
+const vendorWords=s=>String(s||'').toLowerCase().replace(/[^a-z0-9 ]/g,' ').split(/\s+/).filter(w=>w.length>=5&&!['payment','purchase','online','paypal','aplpay','guitar','guitars'].includes(w));
+export function receiptSuggestions(bank,receipts,accounts){
+  const candidates=new Map(),reverse=new Map();
+  for(const b of bank){const f=b.fields;if(f['Is Pending?']||!(f.Amount<0)||f['Receipt / Purchase']?.length)continue;
+    const account=accounts.get(f.Account?.[0]);if(!account)continue;
+    const institution=String(account.fields['Expense Source']||'');
+    for(const r of receipts){const rf=r.fields;if(!rf['Purchase Date']||money(rf['Settled USD'])===null||rf['Expense Source']!==institution)continue;
+      const payer=rf['Payment Account']||'';
+      // Chase has three identically named cards: don't guess which one paid a receipt.
+      if(institution!=='Amex'||!['Amex','Delta Amex'].includes(payer))continue;
+      if(Math.abs(Math.abs(f.Amount)-rf['Settled USD'])>0.005)continue;
+      const days=Math.abs(Date.parse(f.Date)-Date.parse(rf['Purchase Date']))/86400000;
+      if(!Number.isFinite(days)||days>3)continue;
+      const text=String(f['Merchant Name']||f.Summary||'').toLowerCase();
+      if(!vendorWords(rf.Vendor).some(w=>text.includes(w)))continue;
+      if(!candidates.has(b.id))candidates.set(b.id,[]);candidates.get(b.id).push(r.id);
+      reverse.set(r.id,(reverse.get(r.id)||0)+1);
+    }
+  }
+  return bank.map(b=>{const ids=candidates.get(b.id)||[];return {id:b.id,fields:{'ID':b.fields.ID,'Suggested Receipt Matches':ids.length===1&&reverse.get(ids[0])===1?ids:[],'Receipt Match Note':ids.length===1&&reverse.get(ids[0])===1?'Suggested only: exact settled USD, Amex account, vendor and date within 3 days. Confirm before reconciling.':ids.length?'Ambiguous: review receipts manually.':''}};});
+}
+async function syncReceipts(at,env){
+  const token=env.SOURCING_AIRTABLE_PAT||env.FINANCE_AIRTABLE_PAT||env.SALES_AIRTABLE_PAT;
+  const source=airtable(token,'appyiRn4kLqU03S1i');
+  const raw=await source.all('tbln41baCj2Mhkz3u');
+  const eventRows=await source.all('tblSTCYw1HFA7H9xm');
+  const events=new Map(eventRows.map(r=>[r.id,r.fields['Event ID']||r.id]));
+  const current=uniqueIndex(await at.all(TABLES.receipts),'Purchase ID'),updates=[];
+  for(const r of raw){const n=normalizeReceipt(r,events),old=current.get(n.fields['Purchase ID']);
+    if(old?.fields['Receipt Source Fingerprint']===n.fingerprint)continue;
+    if(old?.fields['Bank Transactions']?.length||old?.fields['Transactions (2)']?.length)delete n.fields['Settled USD'];
+    updates.push({...n.fields,'Receipt Source Fingerprint':n.fingerprint,...(!old?{'Match Status':'Unmatched — source receipt'}:{})});
+  }
+  await at.upsert(TABLES.receipts,'Purchase ID',updates);
+  const receipts=await at.all(TABLES.receipts),bank=await at.all(TABLES.bank),accounts=new Map((await at.all(TABLES.accounts)).map(r=>[r.id,r]));
+  uniqueIndex(bank,'ID');
+  const suggestions=receiptSuggestions(bank,receipts,accounts).map(r=>r.fields);
+  const changed=changedRows(suggestions,uniqueIndex(bank,'ID'),'ID');await at.upsert(TABLES.bank,'ID',changed);
+  const showRows=await source.all('tblJ9QtpEFi1efOgl');
+  const showEntries=showRows.map(r=>normalizeCashShow(r,events)).filter(Boolean);
+  const orders=uniqueIndex(await at.all(TABLES.orders),'Order Key');
+  const showUpdates=changedRows(showEntries.map(n=>mergeOrder(orders.get(n.fields['Order Key']),n)),orders,'Order Key');
+  await at.upsert(TABLES.orders,'Order Key',showUpdates);
+  const fresh=uniqueIndex(await at.all(TABLES.orders),'Order Key'),lineIndex=uniqueIndex(await at.all(TABLES.lines),'Line Key');
+  const showLines=showEntries.flatMap(n=>n.lines.map(l=>({...l,Order:[fresh.get(l['Order Key']).id]})));
+  await at.upsert(TABLES.lines,'Line Key',changedRows(showLines,lineIndex,'Line Key'));
+  return {read:raw.length+showRows.length,written:updates.length+showUpdates.length,receiptSuggestions:suggestions.filter(r=>r['Suggested Receipt Matches'].length).length,cashSales:showEntries.length};
+}
 export function mergeOrder(existing,normalized) {
   const fingerprint=hash(normalized.fields),old=existing?.fields||{};
   let report=normalized.report;
@@ -92,8 +174,8 @@ function airtable(token,base=BASE){
   };
 }
 function uniqueIndex(rows,key){const m=new Map();for(const r of rows){const k=r.fields[key];if(!k)continue;if(m.has(k))throw Error(`Duplicate key in ${key}; stopped before writing`);m.set(k,r);}return m;}
-export function changedRows(rows,index,key){return rows.filter(fields=>{const old=index.get(fields[key])?.fields;if(!old)return true;return Object.entries(fields).some(([k,v])=>JSON.stringify(old[k]??'')!==JSON.stringify(v??''));});}
-async function shopifyOrders(env,start){
+export function changedRows(rows,index,key){return rows.filter(fields=>{const old=index.get(fields[key])?.fields;if(!old)return true;return Object.entries(fields).some(([k,v])=>JSON.stringify(old[k]??(Array.isArray(v)?[]:''))!==JSON.stringify(v??''));});}
+export async function shopifyOrders(env,start){
   const host=env.SHOPIFY_STORE_DOMAIN;
   if(!host||!env.SHOPIFY_CLIENT_ID||!env.SHOPIFY_CLIENT_SECRET)throw Error('Missing Shopify credentials');
   if(!/^[a-z0-9-]+\.myshopify\.com$/i.test(host))throw Error('Invalid Shopify host');
@@ -128,6 +210,18 @@ async function paypalActivity(env,start){
     }begin=end; // inclusive boundary records are deduplicated below
   }return all;
 }
+export async function gxeOrders(env,start){
+  if(!env.GXE_API_TOKEN)throw Error('Missing GXE_API_TOKEN — copy existing GXE credential into this service');
+  const all=[],seen=new Set();
+  for(let page=1;page<=100;page++){
+    const {data}=await request(`https://www.sweetwater.com/used/public-api/v1/orders?page=${page}&resultsPerPage=100`,{headers:{Authorization:`Bearer ${env.GXE_API_TOKEN}`,Accept:'application/json'}},'Gear Exchange orders');
+    const rows=Array.isArray(data)?data:data.orders??data.data;
+    if(!Array.isArray(rows))throw Error('Unverified GXE orders response');
+    if(!rows.length)return all.filter(o=>businessDate(o.soldAt)>=start.slice(0,10));
+    for(const r of rows){const id=String(r.orderId);if(seen.has(id))throw Error('Repeated GXE page; incomplete snapshot');seen.add(id);all.push(r);}
+    await pause(550);
+  }throw Error('GXE page limit reached');
+}
 let running=false;
 export async function runFinanceSync(env=process.env){
   if(running)return {busy:true};running=true;
@@ -141,10 +235,11 @@ export async function runFinanceSync(env=process.env){
     // Access and existing-key audit must pass before contacting sales providers or writing rows.
     const existing=uniqueIndex(await at.all(TABLES.orders),'Order Key');
     const lineIndex=uniqueIndex(await at.all(TABLES.lines),'Line Key');
-    for(const source of ['Shopify','Reverb MAIN','Reverb WAREHOUSE']){
+    try{report.sources.Receipts=await syncReceipts(at,env);}catch(e){report.errors.push(`Receipts: ${e.message}`);}
+    for(const source of ['Shopify','Reverb MAIN','Reverb WAREHOUSE','Gear Exchange']){
       try{
-        const raw=source==='Shopify'?await shopifyOrders(env,start):await reverbOrders(env,source.split(' ')[1],start);
-        const entries=raw.map(o=>source==='Shopify'?normalizeShopify(o):normalizeReverb(o,source.split(' ')[1]));
+        const raw=source==='Shopify'?await shopifyOrders(env,start):source==='Gear Exchange'?await gxeOrders(env,start):await reverbOrders(env,source.split(' ')[1],start);
+        const entries=raw.map(o=>source==='Shopify'?normalizeShopify(o):source==='Gear Exchange'?normalizeGxe(o):normalizeReverb(o,source.split(' ')[1]));
         const batch=new Map();for(const n of entries){const key=n.fields['Order Key'];if(batch.has(key)&&hash(batch.get(key).fields)!==hash(n.fields))throw Error('Conflicting duplicate provider order');batch.set(key,n);}
         const orders=[...batch.values()].map(n=>mergeOrder(existing.get(n.fields['Order Key']),n));
         const changed=changedRows(orders,existing,'Order Key');
