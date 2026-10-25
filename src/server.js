@@ -2319,3 +2319,9 @@ app.get("/jobs/shipstation-order-location-repair/run", requireSecret, async (req
 app.listen(PORT, () => {
   console.log(`Shopify Sales Importer listening on port ${PORT}`);
 });
+
+// Finance imports are isolated from inventory and legacy sales routes.
+if (process.env.FINANCE_SYNC_ENABLED === "true") {
+  import("./finance-sync.js").then(({ startFinanceSync }) => startFinanceSync())
+    .catch(() => console.error("FINANCE_SYNC module could not start"));
+}
