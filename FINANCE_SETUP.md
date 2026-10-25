@@ -4,9 +4,9 @@ Finance base: https://airtable.com/app7b0v3wEXudVmkD
 
 The optional `src/finance-sync.js` job runs in the existing Shopify Sales Importer service. Existing legacy sales endpoints and inventory integrations are unchanged. New imports use only the new finance tables. No inventory API writes are made.
 
-## Current activation blocker
+## Activation status — October 25, 2026
 
-Live test on October 25, 2026 returned `Airtable tblJF93j14JRV8d5y: HTTP 401`. The existing sales Airtable credential is invalid. The job stops before any import when finance access cannot be verified. Do not treat a successful Railway deployment as a successful data import.
+The owner completed the finance Airtable and GXE token setup. A live run completed with no errors: 29 Shopify orders, 564 Main Reverb orders, 327 Warehouse Reverb orders, 14 Gear Exchange orders and 464 PayPal activity rows. All 464 PayPal rows match the owner's YTD CSV by transaction ID, gross, fee and currency. Earlier HTTP 401 errors were resolved. The setup steps below are retained for recovery; do not repeat them unnecessarily. Shopify history currently begins August 27; all-orders scope is being checked.
 
 1. Create an Airtable personal access token named `AFFOG Finance Sync` with `data.records:read` and `data.records:write` scopes.
 2. Grant access to **AFFOG Sales & Finance** (`app7b0v3wEXudVmkD`) and **Japan 2026 / Sourcing & Events** (`appyiRn4kLqU03S1i`). The new finance job does not require access to the inventory base.
@@ -21,7 +21,7 @@ Live test on October 25, 2026 returned `Airtable tblJF93j14JRV8d5y: HTTP 401`. T
 - Shopify: all returned order states, paginated; pulls from January 1, 2026. Historical access depends on Shopify order permissions; compare source reports for coverage. Unknown or marketplace-mirrored sources are flagged, never approved automatically.
 - Reverb Main / Warehouse: separate order-key namespaces; updated-date pagination, with order date in the configured year. Explicit source selling, processing and shipping-label fees retained. Refund/cancellation rows excluded pending reconciliation.
 - Gear Exchange: direct read-only orders, separate from Hyperwallet settlements. Requires GXE_API_TOKEN on this service. Currency, quantity and settlement fees remain review items.
-- PayPal: paginated activity in windows of at most 30 days, including positive and negative activity. Imported into **PayPal Activity Review**, not automatically counted as sales. Invoice, POS, Shopify checkout, transfer and loan classification must be validated using actual activity/export samples. Supply one PayPal POS transaction-level report and, if needed, an invoice report to finish mapping. Do not sum settlements as extra sales.
+- PayPal: paginated activity in windows of at most 30 days, including positive and negative activity. Imported into **PayPal Activity Review**, with grouped invoice/POS summaries held for order review. The supplied CSV verified 14 POS receipts and 22 invoice payments across 20 invoice numbers. Classification is stored on the existing activity rows; grouped invoice summaries avoid treating installments as separate orders. Four other incoming receipts remain unclassified. PayPal payment-date receipt totals are displayed separately from invoice/order-month totals. Do not sum settlements as extra sales.
 - Source receipts: copied from the sourcing base's **Expenses & Receipts**, including attachments when supplied. Stable key `SRC-<source record id>`. Receipt attachments use a source-ID fingerprint so temporary URL changes do not trigger repeated replacement. Finance receipt deletion is not propagated from sourcing.
 - Show cash sales: source **Show Transactions** rows with `Type=Sale` and `Payment Method=Cash`. Date, item amount before tax, tax (including explicit zero), cash received, event and SKU must be entered. Trade/POS rows are not silently converted into cash sales. Imported records remain **Needs review** and do not alter inventory.
 
@@ -44,3 +44,9 @@ Live test on October 25, 2026 returned `Airtable tblJF93j14JRV8d5y: HTTP 401`. T
 ## Validation
 
 Run `node --test test/finance-sync.test.js`. Tests cover stable identities, repeated SKUs, tax/refund separation, review reset, unknown fees, receipt ambiguity, source mirroring, cash vs trades/POS, pagination and fail-before-write behavior on invalid credentials.
+
+## Remaining owner input
+
+- Resolve Shopify older-order coverage using read_all_orders access or a year-to-date Shopify order export. Current live records start August 27.
+- Identify four incoming PayPal receipts: $103.34 (Brian Money), $175.53 (Bryan Zetino), $969 (Tore Lomholt), and $71.80 (Fengshun Li). These are excluded pending classification.
+- Confirm finance-base sharing is owner-only and identify the generically named Chase cards for reliable receipt matching.
