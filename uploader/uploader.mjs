@@ -61,4 +61,13 @@ $('target').onchange=clear;$('q').oninput=clear;
 $('search').onclick=async()=>{if(busy)return;clear();$('status').textContent='Searching…';try{const rows=await api('/api/search?'+new URLSearchParams({target:$('target').value,q:$('q').value}));$('status').textContent=rows.length?'':'No matching records.';for(const row of rows){const b=document.createElement('button');b.textContent=row.title||row.id;b.setAttribute('aria-pressed','false');b.onclick=()=>{selected={id:row.id,target:$('target').value};for(const c of $('results').children)c.setAttribute('aria-pressed','false');b.setAttribute('aria-pressed','true');$('chosen').textContent='Attach to: '+row.title;$('upload').disabled=false;};$('results').append(b);}}catch(e){$('status').textContent=e.message;}};
 $('upload').onclick=async()=>{if(busy||!selected)return;const files=[...$('files').files];if(!files.length||files.length>20){$('status').textContent='Choose between 1 and 20 files.';return;}if(files.some(f=>f.size>5000000)){ $('status').textContent='A file exceeds 5 MB. Resize it or use a smaller copy.';return;}const dest={...selected};busy=true;for(const id of ['upload','search','target','q','files','key'])$(id).disabled=true;$('results').inert=true;$('status').textContent='';try{for(const file of files){const form=new FormData();form.append('file',file);const data=await api('/api/upload?'+new URLSearchParams({target:dest.target,record:dest.id}),{method:'POST',body:form});$('status').textContent+=file.name+': '+(data.status==='attached'?'attached and verified':'already attached — skipped')+'\\n';}$('files').value='';}catch(e){$('status').textContent+='Stopped: '+e.message;}finally{busy=false;for(const id of ['upload','search','target','q','files','key'])$(id).disabled=false;$('results').inert=false;}};
 </script></html>`;
-if(typeof Bun!=='undefined'&&import.meta.main)Bun.serve({port:Number(Bun.env.PORT||8080),maxRequestBodySize:MAX_BODY,fetch:createApp(Bun.env)});
+if(typeof Bun!=='undefined'&&import.meta.main){
+ const app=createApp(Bun.env);Bun.serve({port:Number(Bun.env.PORT||8080),maxRequestBodySize:MAX_BODY,fetch:app});
+ console.log('Attachment uploader listening; file bytes and credentials are never logged.');
+ if(Bun.env.UPLOADER_KEY){
+  for(const [target,q]of [['inventory','A10252601'],['finance','Swedish Vintage'],['sourcing','A10252601'],['receipts','TAMPA-20261024']]){
+   const r=await app(new Request('http://localhost/api/search?'+new URLSearchParams({target,q}),{headers:{Authorization:'Bearer '+Bun.env.UPLOADER_KEY}}));
+   const detail=await r.json();console.log('Read-only credential preflight: '+target+' HTTP '+r.status+(r.ok?'':' '+detail.error));
+  }
+ }
+}
