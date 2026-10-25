@@ -67,6 +67,8 @@ export function normalizePayPal(d) {
   return compact({'Transaction Key':`PAYPAL:${id}:${code}`,'Transaction ID':String(id),'Date':businessDate(t.transaction_initiation_date),'Event Code':code,'Status':t.transaction_status||'','Currency':t.transaction_amount?.currency_code||'','Gross Amount':money(t.transaction_amount),'Fee Amount':money(t.fee_amount),'Invoice ID':String(t.invoice_id||''),'Reference ID':String(t.paypal_reference_id||''),'Description':String(t.transaction_subject||t.transaction_note||'').slice(0,3000)});
 }
 export function classifyPayPal(f,all=new Map()){
+  const override=f['Classification Override'];
+  if(['Invoice payment','Show POS sale','Direct PayPal sale','Bricklink sale','Customer refund','Purchase refund','Loan proceeds','Account transfer','Credit financing','Tax remittance','Payment sent — review','Other incoming — review'].includes(override))return [override,f['Owner Classification Note']||'Owner-confirmed classification.'];
   const gross=money(f['Gross Amount'])||0,code=f['Event Code']||'',desc=f['Report Description']||'',name=f['Report Counterparty']||'';
   if(gross>0&&/webbank/i.test(name))return ['Loan proceeds','Financing, not a customer sale.'];
   if(/BML|Transfer To BML/i.test(desc))return ['Credit financing','Credit movement, not sales or a second purchase.'];
@@ -83,10 +85,14 @@ export function paypalOrderGroups(activityRows){
   for(const r of activityRows){const f=r.fields,[kind]=classifyPayPal(f,byTxn);let key;
     if(kind==='Show POS sale')key=`PAYPAL-POS:${f['Transaction ID']}`;
     else if(kind==='Invoice payment')key=`PAYPAL-INVOICE:${f['Invoice ID']}`;
+    else if(kind==='Direct PayPal sale')key=`PAYPAL-DIRECT:${f['Transaction ID']}`;
+    else if(kind==='Bricklink sale')key=`BRICKLINK:${f['Transaction ID']}`;
     else if(kind==='Customer refund'){
       const parent=byTxn.get(f['Reference ID']);if(!parent)continue;const [parentKind]=classifyPayPal(parent,byTxn);
       if(parentKind==='Invoice payment')key=`PAYPAL-INVOICE:${parent['Invoice ID']}`;
       else if(parentKind==='Show POS sale')key=`PAYPAL-POS:${parent['Transaction ID']}`;
+      else if(parentKind==='Direct PayPal sale')key=`PAYPAL-DIRECT:${parent['Transaction ID']}`;
+      else if(parentKind==='Bricklink sale')key=`BRICKLINK:${parent['Transaction ID']}`;
     }
     if(!key)continue;
     if(!groups.has(key))groups.set(key,[]);groups.get(key).push(r);
@@ -94,15 +100,16 @@ export function paypalOrderGroups(activityRows){
   return [...groups].map(([key,rows])=>{
     const payments=rows.filter(r=>r.fields['Gross Amount']>0),refunds=rows.filter(r=>r.fields['Gross Amount']<0);
     if(!payments.length)return null;
-    const first=payments[0].fields,isPos=key.startsWith('PAYPAL-POS:'),currencies=new Set(rows.map(r=>r.fields.Currency));
+    const first=payments[0].fields,isPos=key.startsWith('PAYPAL-POS:'),isInvoice=key.startsWith('PAYPAL-INVOICE:'),isBricklink=key.startsWith('BRICKLINK:'),currencies=new Set(rows.map(r=>r.fields.Currency));
+    const salesChannel=isBricklink?'Bricklink':isPos?'PayPal — Show POS':isInvoice?'PayPal — Invoices':'PayPal — Direct';
     const warning=['Invoice/POS source payment summary: verify original order, tax, items and cross-channel duplication before inclusion.'];
     if(payments.length>1)warning.push(`${payments.length} payments on this invoice; not separate orders. Use activity dates for cash receipt reporting.`);
     if(refunds.length)warning.push('Refunds included in grouped order; activity dates preserve refund timing separately.');
     if(currencies.size!==1)warning.push('Mixed currency: do not aggregate into USD.');
     const verified=rows.every(r=>r.fields['Report Match']==='Matched — ID, gross, fee and currency');
     if(!verified)warning.push('New API-only activity awaits report/tax verification.');
-    const subtotal=verified?sum(payments.map(r=>r.fields['Gross Amount']-r.fields['Report Shipping']-r.fields['Report Tax'])):null;
-    const fields=compact({'Order Key':key,'Order ID':isPos?first['Transaction ID']:first['Invoice ID'],'Sales Channel':isPos?'PayPal — Show POS':'PayPal — Invoices','Payment Method':'PayPal','Status':'Payments received — order review pending','Order Date':payments.map(r=>r.fields.Date).sort()[0],'Paid At':payments.map(r=>r.fields.Date).sort().at(-1),'Currency':currencies.size===1?first.Currency:null,'Items Subtotal':subtotal,'Shipping Charged':verified?sum(payments.map(r=>r.fields['Report Shipping'])):null,'Tax Collected':verified?sum(payments.map(r=>r.fields['Report Tax'])):null,'Refund Amount':verified?-sum(refunds.map(r=>r.fields['Gross Amount']-r.fields['Report Tax'])):null,'Processing Fees':-sum(rows.map(r=>r.fields['Fee Amount'])),'Platform Fees':0,'Fee Status':verified?'Verified':'Source payment fees; tax verification pending','Import Source':'PayPal grouped payments','Receipt Basis':`${payments.length} payment(s), ${refunds.length} refund(s). Order date is first receipt, not verified invoice issue date.`,'Import Warnings':warning.join('\n')});
+    const subtotal=verified?sum(payments.map(r=>r.fields['Gross Amount']-r.fields['Report Shipping']-Math.abs(r.fields['Report Tax']||0))):null;
+    const fields=compact({'Order Key':key,'Order ID':isInvoice?first['Invoice ID']:first['Transaction ID'],'Sales Channel':salesChannel,'Business / Brand':isBricklink?'A Flash Flood of Bricks':'A Flash Flood of Gear','Payment Method':'PayPal','Status':'Payments received — order review pending','Order Date':payments.map(r=>r.fields.Date).sort()[0],'Paid At':payments.map(r=>r.fields.Date).sort().at(-1),'Currency':currencies.size===1?first.Currency:null,'Items Subtotal':subtotal,'Shipping Charged':verified?sum(payments.map(r=>r.fields['Report Shipping'])):null,'Tax Collected':verified?sum(payments.map(r=>Math.abs(r.fields['Report Tax']||0))):null,'Refund Amount':verified?-sum(refunds.map(r=>r.fields['Gross Amount']+Math.abs(r.fields['Report Tax']||0))):null,'Processing Fees':-sum(rows.map(r=>r.fields['Fee Amount'])),'Platform Fees':0,'Fee Status':verified?'Verified':'Source payment fees; tax verification pending','Import Source':'PayPal grouped payments','Receipt Basis':`${payments.length} payment(s), ${refunds.length} refund(s). Order date is first receipt, not verified invoice issue date.`,'Import Warnings':warning.join('\n')});
     return {fields,report:'Needs review',lines:[],activityIds:rows.map(r=>r.id)};
   }).filter(Boolean);
 }
