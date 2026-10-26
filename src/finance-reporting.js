@@ -1,3 +1,4 @@
+import { syncProfit } from './finance-pnl.js';
 const T={ledger:'tblqJdpBfUuewMpOy',snapshots:'tblDLIpjp2IOpL2JN',months:'tblQlmnTA9be5P5jZ'};
 const n=x=>Number(x)||0;
 const round=x=>Math.round(x*100)/100;
@@ -84,8 +85,9 @@ export async function syncFinanceReporting(at,inventory,now=new Date()){
  // Upsert stable keys; zero stale rows rather than leave outdated totals visible.
  const active=new Set(ledger.map(f=>f['Reporting Key']));for(const r of existing)if(!active.has(r.fields['Reporting Key']))changed.push({'Reporting Key':r.fields['Reporting Key'],Sales:0,Spending:0,'Checking In':0,'Checking Out':0,'Checking Net':0,'Needs Review':0,'Reporting Note':'Source no longer eligible'});
  await at.upsert(T.ledger,'Reporting Key',changed);
- let inventoryCoverage='Not available';
- try{const rows=await inventory.all('tbljh3I54QsvFDoZe');const date=new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York'}).format(now);const snap=inventorySnapshot(rows,date,now);await at.upsert(T.snapshots,'Snapshot Date',[snap]);inventoryCoverage='Daily snapshots active';}catch{inventoryCoverage='Inventory read access unavailable; existing snapshots retained';}
+ let inventoryCoverage='Not available',inventoryRows=null,profitCoverage='Inventory access required';
+ try{const rows=await inventory.all('tbljh3I54QsvFDoZe');inventoryRows=rows;const date=new Intl.DateTimeFormat('en-CA',{timeZone:'America/New_York'}).format(now);const snap=inventorySnapshot(rows,date,now);await at.upsert(T.snapshots,'Snapshot Date',[snap]);inventoryCoverage='Daily snapshots active';}catch{inventoryCoverage='Inventory read access unavailable; existing snapshots retained';}
  const snapshots=await at.all(T.snapshots);await at.upsert(T.months,'Month',monthlyReporting(ledger,snapshots,now));
- return {read:bank.length+orders.length+paypal.length,written:changed.length,inventoryCoverage};
+ if(inventoryRows)profitCoverage=await syncProfit(at,ledger,orders,paypal,inventoryRows);
+ return {read:bank.length+orders.length+paypal.length,written:changed.length,inventoryCoverage,profitCoverage};
 }
