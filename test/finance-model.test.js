@@ -4,3 +4,17 @@ test('gross includes tax; net deducts fees and shipping once; cash flow never de
 test('adding an estimated cost changes profit but never management cash flow',()=>{const ledger=[{Date:'2026-10-01',Type:'Sale','Reporting Key':'SALE:X',Description:'X',Sales:100}],econ=cost=>[{Date:'2026-10-01','Economics Key':'SALE:X|L1','Net Sales':100,'Known COGS':cost,Ownership:'Owned'}];const[a]=buildBusinessDays(ledger,[],[],econ(null)),[b]=buildBusinessDays(ledger,[],[],econ(60));assert.equal(a['Estimated Profit'],100);assert.equal(b['Estimated Profit'],40);assert.equal(a['Cash Flow'],b['Cash Flow']);});
 test('unconfigured, missing or incorrect dashboard credentials never authorize',()=>{assert.equal(dashboardAuthorized(undefined,undefined),false);assert.equal(dashboardAuthorized('x',''),false);assert.equal(dashboardAuthorized('wrong','secret'),false);assert.equal(dashboardAuthorized('secret','secret'),true);});
 test('matched ShipStation labels replace funding expenses and are assigned to sale date once',()=>{const ledger=[{Date:'2026-10-01',Type:'Sale','Reporting Key':'SALE:O1',Description:'O1',Sales:100},{Date:'2026-10-05',Type:'Bank',Description:'SHIPSTATION funding',Spending:20,'Expense Category':'Shipping'}],orders=[f({'Order Key':'O1','Order Date':'2026-10-01','Items Subtotal':100})],labels=[f({Status:'Matched','Matched Order Key':'O1','Total Cost':12})];const days=buildBusinessDays(ledger,orders,[],[],new Date(),labels);assert.equal(days.find(d=>d.Date==='2026-10-01')['Sales Net'],88);assert.equal(days.reduce((s,d)=>s+d.Shipping,0),12);assert.equal(days.reduce((s,d)=>s+d['Cash Flow'],0),88);});
+
+test('expense drill-down uses the exact operating expense entries, including refunds and excluding label funding',()=>{
+ const ledger=[
+ {'Reporting Key':'B1',Date:'2026-10-01',Type:'Bank',Source:'Chase / Amex',Description:'Rent',Spending:2400,'Expense Category':'Rent or lease'},
+ {'Reporting Key':'B2',Date:'2026-10-01',Type:'Bank',Source:'Chase / Amex',Description:'Rent correction',Spending:-100,'Expense Category':'Rent or lease'},
+ {'Reporting Key':'B3',Date:'2026-10-02',Type:'Bank',Description:'Amazon',Spending:12.34,'Expense Category':'Office Supplies'},
+ {'Reporting Key':'B4',Date:'2026-10-02',Type:'Bank',Description:'ShipStation',Spending:100,'Expense Category':'Office Expenses'},
+ {'Reporting Key':'B5',Date:'2026-10-02',Type:'Bank',Spending:100,'Expense Category':'Inventory (COGS)'},
+ {'Reporting Key':'B6',Date:'2026-10-02',Type:'Marketplace fees',Spending:10,'Expense Category':'Commissions and fees'},
+ {'Reporting Key':'B7',Date:'2026-10-02',Type:'Bank',Spending:0,'Expense Category':'Other Expenses'}];
+ const days=buildBusinessDays(ledger,[],[],[],new Date('2026-10-26'),[{Status:'Matched',Date:'2026-10-02','Total Cost':5}]);
+ for(const d of days){const entries=JSON.parse(d['Expense Transactions']),categories=JSON.parse(d['Expenses by Category']);assert.equal(Math.round(entries.reduce((s,e)=>s+e.amount,0)*100),Math.round(d['Operating Expenses']*100));for(const[k,v]of Object.entries(categories))assert.equal(Math.round(entries.filter(e=>e.category===k).reduce((s,e)=>s+e.amount,0)*100),Math.round(v*100));}
+ assert.deepEqual(days.flatMap(d=>JSON.parse(d['Expense Transactions'])).map(e=>e.key),['B1','B2','B3']);
+});
