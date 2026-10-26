@@ -1,3 +1,4 @@
+import { SALE_REVIEW_TABLE, reviewCostOverrides, syncSaleReviews } from './finance-sale-review.js';
 import { syncBusinessDays } from './finance-model.js';
 const n=x=>Number(x)||0,round=x=>Math.round(x*100)/100;
 const ownerType=x=>!x||/^(unknown|other|\d+|INS_.+)$/i.test(x)?'Unknown':/^(ff|ff owned|owned|a flash flood)/i.test(x)?'Owned':/split|50\/50|shared/i.test(x)?'Shared / split':'Consigned';
@@ -57,8 +58,9 @@ export function monthlyProfit(ledger,economics){
  return [...map.values()];
 }
 export async function syncProfit(at,ledger,orders,paypal,inventory){
- const lines=await at.all('tbl5Mpv86jeCfnhcL'),estimates=await at.all('tblyxo9nBe4myX77H'),economics=saleEconomics(ledger,orders,lines,paypal,inventory,estimates);
+ const originalLines=await at.all('tbl5Mpv86jeCfnhcL'),reviewRows=await at.all(SALE_REVIEW_TABLE),lines=reviewCostOverrides(originalLines,reviewRows),estimates=await at.all('tblyxo9nBe4myX77H'),economics=saleEconomics(ledger,orders,lines,paypal,inventory,estimates);
  const businessDays=await syncBusinessDays(at,ledger,orders,paypal,economics);
+ const saleReviews=await syncSaleReviews(at,economics,orders,lines,paypal,inventory,reviewRows);
  const existing=await at.all('tbllrb3l11MjolXiI'),index=new Map(existing.map(r=>[r.fields['Economics Key'],r.fields]));
  const changed=economics.filter(f=>Object.entries(f).some(([k,v])=>JSON.stringify(v??'')!==JSON.stringify(index.get(f['Economics Key'])?.[k]??'')));
  const active=new Set(economics.map(f=>f['Economics Key']));for(const r of existing)if(!active.has(r.fields['Economics Key']))changed.push({'Economics Key':r.fields['Economics Key'],'Net Sales':0,'Known COGS':null,'Estimated Consignment Payout':0,'Item Cost Excluding Estimates':null,'Gross Profit on Costed Sales':null,'Sales Missing Cost':0,'Needs Review':0,'Cost Basis':'Source sale no longer eligible'});
@@ -69,7 +71,7 @@ export async function syncProfit(at,ledger,orders,paypal,inventory){
  const dashboardChanged=dashboard.filter(f=>Object.entries(f).some(([k,v])=>JSON.stringify(v??'')!==JSON.stringify(dashboardIndex.get(f['Dashboard Key'])?.[k]??'')));
  const activeDashboard=new Set(dashboard.map(f=>f['Dashboard Key']));for(const r of existingDashboard)if(!activeDashboard.has(r.fields['Dashboard Key']))dashboardChanged.push({'Dashboard Key':r.fields['Dashboard Key'],...Object.fromEntries(['Net Sales','Item Costs Excluding Estimates','Estimated Consignment Payouts','Known Management COGS','Gross Profit on Costed Sales','Gross Profit','Operating Expenses','Interest Expense','Profit Before Tax and Depreciation','Sales Missing Cost','COGS Coverage','Items Missing Cost','Checking In','Checking Out','Checking Net','Beginning Owned Inventory','Ending Owned Inventory','Channel Sales','Ownership Sales','Category Spend','Cash In by Source','Cash Out by Purpose'].map(k=>[k,null]))});
  await at.upsert('tbliGxkmK9IKSheKU','Dashboard Key',dashboardChanged);
- return {businessDays,lines:economics.length,missingCosts:economics.filter(f=>f['Known COGS']===null).length,consignmentEstimateLines:economics.filter(f=>f['Estimated Consignment Payout']>0).length,consignmentEstimates:round(economics.reduce((s,f)=>s+n(f['Estimated Consignment Payout']),0))};
+ return {businessDays,saleReviews,lines:economics.length,missingCosts:economics.filter(f=>f['Known COGS']===null).length,consignmentEstimateLines:economics.filter(f=>f['Estimated Consignment Payout']>0).length,consignmentEstimates:round(economics.reduce((s,f)=>s+n(f['Estimated Consignment Payout']),0))};
 }
 
 // A single source table gives the main dashboard one shared period selector.
