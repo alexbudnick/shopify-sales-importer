@@ -1,3 +1,4 @@
+import { syncBusinessDays } from './finance-model.js';
 const n=x=>Number(x)||0,round=x=>Math.round(x*100)/100;
 const ownerType=x=>!x||/^(unknown|other|\d+|INS_.+)$/i.test(x)?'Unknown':/^(ff|ff owned|owned|a flash flood)/i.test(x)?'Owned':/split|50\/50|shared/i.test(x)?'Shared / split':'Consigned';
 export function saleEconomics(ledger,orders,lines,paypal,inventory,estimates=[]){
@@ -27,13 +28,14 @@ export function saleEconomics(ledger,orders,lines,paypal,inventory,estimates=[])
    const ownership=f['Sale Ownership Override']||ownerType(f['Owner at Sale']||estimate?.Owner||match?.fields.Owner);
    let cost=null,basis='Missing item cost';
    const qty=n(f.Quantity)||1;let estimatedPayout=0;
-   const matchedCost=ownership==='Owned'&&typeof match?.fields.Cost==='number'?round(match.fields.Cost*qty):null;
+   const matchedCost=typeof match?.fields.Cost==='number'?round(match.fields.Cost*qty):null;
    if(sale.Sales<0){cost=0;basis='Refund: no automatic COGS reversal; review actual return/restock';}
    else if(typeof f['Confirmed Item COGS']==='number'){cost=round(f['Confirmed Item COGS']*receiptFactor);basis='Confirmed item cost / settlement';}
    else if(ownership==='Consigned'&&typeof f['Consignor Amount Owed']==='number'){cost=round(f['Consignor Amount Owed']*receiptFactor);basis='Recorded consignor obligation';}
    else if(ownership==='Owned'&&typeof f['Unit Cost at Sale']==='number'){cost=round(f['Unit Cost at Sale']*qty*receiptFactor);basis='Recorded sale-time cost';}
    else if(ownership==='Consigned'&&estimate&&qty===1&&soldOrders.get(String(f.SKU||'').trim())?.size===1){estimatedPayout=round(estimate['Estimated Consignment Payout']*receiptFactor);cost=estimatedPayout;basis='Management estimate: consignment payout; not tax-basis COGS';}
    else if(matchedCost!==null){cost=round(matchedCost*receiptFactor);basis='Provisional: matched current inventory cost';}
+   if(cost===null){cost=0;basis='Item estimate not entered — $0';}
    const provisional=basis.startsWith('Management estimate')||basis.startsWith('Provisional')||sale.Sales<0||!f['Sale Ownership Override']&&!f['Owner at Sale'];
    result.push({'Economics Key':sale['Reporting Key']+'|'+f['Line Key'],Date:sale.Date,Month:sale.Month,'Order Key':orderKey||'','Line Key':f['Line Key'],SKU:f.SKU||'',Item:f.Item||'','Sales Channel':sale['Sales Channel'],Ownership:ownership,'Net Sales':revenue,'Known COGS':cost,'Estimated Consignment Payout':estimatedPayout,'Item Cost Excluding Estimates':cost===null?null:round(cost-estimatedPayout),'Gross Profit on Costed Sales':cost===null?null:round(revenue-cost),'Sales Missing Cost':cost===null?Math.max(0,revenue):0,'Matched Current Inventory Cost':matchedCost,'Cost Basis':basis+(provisional?' · historical ownership/cost review':''),'Needs Review':cost===null||provisional?1:0});
   }
@@ -48,7 +50,7 @@ export function monthlyProfit(ledger,economics){
  for(const m of map.values()){
   m['COGS Coverage']=m['Net Sales']>0?Math.min(1,Math.max(0,m['Costed Net Sales']/m['Net Sales'])):0;
   m['Profit Before Missing Costs']=m['Net Sales']-m['Known COGS']-m['Operating Expenses']-m['Interest Expense'];
-  if(!m['Items Missing Cost']){m['Gross Profit']=m['Net Sales']-m['Known COGS'];m['Profit Before Tax and Depreciation']=m['Profit Before Missing Costs'];}
+  m['Gross Profit']=m['Net Sales']-m['Known COGS'];m['Profit Before Tax and Depreciation']=m['Profit Before Missing Costs'];
   m.Status=m['Items Missing Cost']?'Incomplete — missing item costs; profit before missing costs is an upper bound':provisional.has(m.Month)?'Management estimate — includes provisional item costs and/or consignment estimates; not tax profit':'Cost coverage complete; source/refund, settlement fees and tax adjustments still require reconciliation';
   for(const k of Object.keys(m))if(typeof m[k]==='number'&&k!=='COGS Coverage')m[k]=round(m[k]);
  }
@@ -56,6 +58,7 @@ export function monthlyProfit(ledger,economics){
 }
 export async function syncProfit(at,ledger,orders,paypal,inventory){
  const lines=await at.all('tbl5Mpv86jeCfnhcL'),estimates=await at.all('tblyxo9nBe4myX77H'),economics=saleEconomics(ledger,orders,lines,paypal,inventory,estimates);
+ const businessDays=await syncBusinessDays(at,ledger,orders,paypal,economics);
  const existing=await at.all('tbllrb3l11MjolXiI'),index=new Map(existing.map(r=>[r.fields['Economics Key'],r.fields]));
  const changed=economics.filter(f=>Object.entries(f).some(([k,v])=>JSON.stringify(v??'')!==JSON.stringify(index.get(f['Economics Key'])?.[k]??'')));
  const active=new Set(economics.map(f=>f['Economics Key']));for(const r of existing)if(!active.has(r.fields['Economics Key']))changed.push({'Economics Key':r.fields['Economics Key'],'Net Sales':0,'Known COGS':null,'Estimated Consignment Payout':0,'Item Cost Excluding Estimates':null,'Gross Profit on Costed Sales':null,'Sales Missing Cost':0,'Needs Review':0,'Cost Basis':'Source sale no longer eligible'});
@@ -66,7 +69,7 @@ export async function syncProfit(at,ledger,orders,paypal,inventory){
  const dashboardChanged=dashboard.filter(f=>Object.entries(f).some(([k,v])=>JSON.stringify(v??'')!==JSON.stringify(dashboardIndex.get(f['Dashboard Key'])?.[k]??'')));
  const activeDashboard=new Set(dashboard.map(f=>f['Dashboard Key']));for(const r of existingDashboard)if(!activeDashboard.has(r.fields['Dashboard Key']))dashboardChanged.push({'Dashboard Key':r.fields['Dashboard Key'],...Object.fromEntries(['Net Sales','Item Costs Excluding Estimates','Estimated Consignment Payouts','Known Management COGS','Gross Profit on Costed Sales','Gross Profit','Operating Expenses','Interest Expense','Profit Before Tax and Depreciation','Sales Missing Cost','COGS Coverage','Items Missing Cost','Checking In','Checking Out','Checking Net','Beginning Owned Inventory','Ending Owned Inventory','Channel Sales','Ownership Sales','Category Spend','Cash In by Source','Cash Out by Purpose'].map(k=>[k,null]))});
  await at.upsert('tbliGxkmK9IKSheKU','Dashboard Key',dashboardChanged);
- return {lines:economics.length,missingCosts:economics.filter(f=>f['Known COGS']===null).length,consignmentEstimateLines:economics.filter(f=>f['Estimated Consignment Payout']>0).length,consignmentEstimates:round(economics.reduce((s,f)=>s+n(f['Estimated Consignment Payout']),0))};
+ return {businessDays,lines:economics.length,missingCosts:economics.filter(f=>f['Known COGS']===null).length,consignmentEstimateLines:economics.filter(f=>f['Estimated Consignment Payout']>0).length,consignmentEstimates:round(economics.reduce((s,f)=>s+n(f['Estimated Consignment Payout']),0))};
 }
 
 // A single source table gives the main dashboard one shared period selector.
