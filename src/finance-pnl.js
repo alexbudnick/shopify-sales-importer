@@ -59,6 +59,34 @@ export async function syncProfit(at,ledger,orders,paypal,inventory){
  const existing=await at.all('tbllrb3l11MjolXiI'),index=new Map(existing.map(r=>[r.fields['Economics Key'],r.fields]));
  const changed=economics.filter(f=>Object.entries(f).some(([k,v])=>JSON.stringify(v??'')!==JSON.stringify(index.get(f['Economics Key'])?.[k]??'')));
  const active=new Set(economics.map(f=>f['Economics Key']));for(const r of existing)if(!active.has(r.fields['Economics Key']))changed.push({'Economics Key':r.fields['Economics Key'],'Net Sales':0,'Known COGS':null,'Estimated Consignment Payout':0,'Item Cost Excluding Estimates':null,'Gross Profit on Costed Sales':null,'Sales Missing Cost':0,'Needs Review':0,'Cost Basis':'Source sale no longer eligible'});
- await at.upsert('tbllrb3l11MjolXiI','Economics Key',changed);await at.upsert('tblNULg3nBAwrDIgj','Month',monthlyProfit(ledger,economics));
+ await at.upsert('tbllrb3l11MjolXiI','Economics Key',changed);const profitRows=monthlyProfit(ledger,economics);await at.upsert('tblNULg3nBAwrDIgj','Month',profitRows);
+ const periods=await at.all('tblNULg3nBAwrDIgj'),finance=await at.all('tblQlmnTA9be5P5jZ');
+ const dashboard=monthlyDashboardRows(ledger,economics,profitRows,finance,new Map(periods.map(r=>[r.fields.Month,r.id])));
+ const existingDashboard=await at.all('tbliGxkmK9IKSheKU'),dashboardIndex=new Map(existingDashboard.map(r=>[r.fields['Dashboard Key'],r.fields]));
+ const dashboardChanged=dashboard.filter(f=>Object.entries(f).some(([k,v])=>JSON.stringify(v??'')!==JSON.stringify(dashboardIndex.get(f['Dashboard Key'])?.[k]??'')));
+ const activeDashboard=new Set(dashboard.map(f=>f['Dashboard Key']));for(const r of existingDashboard)if(!activeDashboard.has(r.fields['Dashboard Key']))dashboardChanged.push({'Dashboard Key':r.fields['Dashboard Key'],...Object.fromEntries(['Net Sales','Item Costs Excluding Estimates','Estimated Consignment Payouts','Known Management COGS','Gross Profit on Costed Sales','Gross Profit','Operating Expenses','Interest Expense','Profit Before Tax and Depreciation','Sales Missing Cost','COGS Coverage','Items Missing Cost','Checking In','Checking Out','Checking Net','Beginning Owned Inventory','Ending Owned Inventory','Channel Sales','Ownership Sales','Category Spend','Cash In by Source','Cash Out by Purpose'].map(k=>[k,null]))});
+ await at.upsert('tbliGxkmK9IKSheKU','Dashboard Key',dashboardChanged);
  return {lines:economics.length,missingCosts:economics.filter(f=>f['Known COGS']===null).length,consignmentEstimateLines:economics.filter(f=>f['Estimated Consignment Payout']>0).length,consignmentEstimates:round(economics.reduce((s,f)=>s+n(f['Estimated Consignment Payout']),0))};
+}
+
+// A single source table gives the main dashboard one shared period selector.
+export function monthlyDashboardRows(ledger,economics,profitRows,financeRows,periodIds){
+ const result=[],groups=new Map();
+ const add=(month,kind,label,dimension,measure,amount)=>{if(!amount)return;const key=[month,kind,label].join('|');if(!groups.has(key))groups.set(key,{'Dashboard Key':key,Month:month,Period:[periodIds.get(month)],'Row Type':kind,[dimension]:label,[measure]:0});groups.get(key)[measure]=round(groups.get(key)[measure]+amount);};
+ const fin=new Map(financeRows.map(r=>[r.fields.Month,r.fields]));
+ for(const p of profitRows){const f={'Dashboard Key':p.Month+'|Summary',Month:p.Month,Period:[periodIds.get(p.Month)],'Row Type':'Summary','Coverage Note':p.Status+' | '+(fin.get(p.Month)?.['Inventory Coverage']||'No inventory snapshot')};
+  for(const k of ['Net Sales','Item Costs Excluding Estimates','Estimated Consignment Payouts','Gross Profit on Costed Sales','Gross Profit','Operating Expenses','Interest Expense','Profit Before Tax and Depreciation','Sales Missing Cost','COGS Coverage','Items Missing Cost'])f[k]=p[k];
+  f['Known Management COGS']=p['Known COGS'];for(const k of ['Checking In','Checking Out','Checking Net','Beginning Owned Inventory','Ending Owned Inventory'])f[k]=fin.get(p.Month)?.[k]??null;result.push(f);
+ }
+ for(const f of ledger){
+  if(f.Type==='Sale')add(f.Month,'Channel',f['Sales Channel']||'Unassigned','Sales Channel','Channel Sales',n(f.Sales));
+  add(f.Month,'Expense',f['Expense Category']||'Unassigned','Expense Category','Category Spend',n(f.Spending));
+  const description=String(f.Description||'').toLowerCase();
+  const incoming=/shopify.*capital|webbank/.test(description)?'Financing':/reverb/.test(description)?'Reverb payouts':/shopify/.test(description)?'Shopify payouts':/hyperwallet|gear exchange/.test(description)?'Gear Exchange payouts':/paypal/.test(description)?'PayPal transfers':/transfer/.test(description)?'Transfers':'Other bank inflows';
+  add(f.Month,'Cash in',incoming,'Cash Source','Cash In by Source',n(f['Checking In']));
+  const outgoing=n(f.Spending)?f['Expense Category']:'Repayments, transfers and other';
+  add(f.Month,'Cash out',outgoing||'Unassigned','Cash Purpose','Cash Out by Purpose',n(f['Checking Out']));
+ }
+ for(const f of economics)add(f.Month,'Ownership',f.Ownership,'Ownership','Ownership Sales',n(f['Net Sales']));
+ return result.concat([...groups.values()]).filter(f=>f.Period[0]);
 }
