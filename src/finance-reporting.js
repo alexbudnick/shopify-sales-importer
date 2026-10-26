@@ -52,10 +52,10 @@ export function buildReporting(bank,orders,paypal,receipts=[]){
   if(f.Currency==='USD'&&f.Status==='S'&&n(f['Fee Amount'])<0)add({'Reporting Key':'PP-FEE:'+f['Transaction Key'],Date:f.Date,Type:'Payment processing fees','Expense Category':'Commissions and fees',Source:'PayPal',Description:f['Report Counterparty']||f['Transaction ID'],Spending:-n(f['Fee Amount']),'Reporting Note':'Source-reported PayPal fee, separate from gross sales and credit funding.'});
  }
  for(const {fields:f} of receipts){
-  if(!/cash/i.test(f['Payment Account']||'')||!f.Date||/personal/i.test(f['Business / Personal']||''))continue;
+  if(!/cash/i.test(f['Payment Account']||'')||!f['Purchase Date']||/personal/i.test(f['Business / Personal']||''))continue;
   const amount=typeof f['Settled USD']==='number'?f['Settled USD']:f.Currency==='USD'&&typeof f['Original Amount']==='number'?f['Original Amount']:null;
-  const category=/inventory/i.test(f.Category||'')?'Inventory (COGS)':/travel|taxi|train/i.test(f.Category||'')?'Travel':'Needs review';
-  add({'Reporting Key':'CASH-RECEIPT:'+f['Purchase ID'],Date:f.Date,Type:'Cash purchase','Expense Category':category,Source:'Sourcing cash receipt',Description:f.Vendor||'',Spending:amount||0,'Needs Review':amount===null||category==='Needs review'?1:0,'Reporting Note':amount===null?'USD cost not settled; estimated exchange values excluded.':'Cash purchase, counted once; not a bank withdrawal.'});
+  const category=/inventory/i.test(f['Expense Category']||'')?'Inventory (COGS)':/travel|taxi|train/i.test(f['Expense Category']||'')?'Travel':'Needs review';
+  add({'Reporting Key':'CASH-RECEIPT:'+f['Purchase ID'],Date:f['Purchase Date'],Type:'Cash purchase','Expense Category':category,Source:'Sourcing cash receipt',Description:f.Vendor||'',Spending:amount||0,'Needs Review':amount===null||category==='Needs review'?1:0,'Reporting Note':amount===null?'USD cost not settled; estimated exchange values excluded.':'Cash purchase, counted once; not a bank withdrawal.'});
  }
  return result;
 }
