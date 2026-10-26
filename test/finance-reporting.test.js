@@ -2,6 +2,10 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {buildReporting,monthlyReporting,inventorySnapshot} from '../src/finance-reporting.js';
 const row=fields=>({fields});
+test('documented cash uses receipt schema and never substitutes estimated currency conversion',()=>{
+ const receipts=[row({'Purchase ID':'USD','Purchase Date':'2026-10-24','Payment Account':'Cash USD','Settled USD':1400,'Expense Category':'Inventory Purchases'}),row({'Purchase ID':'JPY','Purchase Date':'2026-09-10','Payment Account':'Cash ¥','Original Amount':70000,'Estimated USD':450,Currency:'JPY','Expense Category':'Inventory'})];
+ const rows=buildReporting([],[],[],receipts);assert.equal(rows.length,2);assert.equal(rows[0].Spending,1400);assert.equal(rows[1].Spending,0);assert.equal(rows[1]['Needs Review'],1);
+});
 test('credit-funded purchases and refunds count once; funding and repayments do not',()=>{
  const pp=[row({'Report Description':'BML Credit - Transfer from BML','Gross Amount':525,'Reference ID':'purchase'}),row({'Transaction ID':'purchase','Transaction Key':'purchase',Date:'2026-07-06',Currency:'USD','Report Match':'Matched — checked','Report Counterparty':'Reverb.com','Gross Amount':-525}),row({'Transaction ID':'refund','Transaction Key':'refund',Date:'2026-07-25',Currency:'USD','Report Match':'Matched — checked','Activity Class':'Purchase refund','Reference ID':'purchase','Gross Amount':525})];
  const ledger=buildReporting([],[],pp);assert.equal(ledger.length,2);assert.equal(ledger.reduce((s,f)=>s+f.Spending,0),0);
