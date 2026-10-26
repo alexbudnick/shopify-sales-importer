@@ -241,11 +241,11 @@ export async function shopifyOrders(env,start){
   if(!/^[a-z0-9-]+\.myshopify\.com$/i.test(host))throw Error('Invalid Shopify host');
   const {data:auth}=await request(`https://${host}/admin/oauth/access_token`,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams({grant_type:'client_credentials',client_id:env.SHOPIFY_CLIENT_ID,client_secret:env.SHOPIFY_CLIENT_SECRET})},'Shopify auth');
   if(!auth.access_token)throw Error('Shopify auth: missing access token');
-  let readAllOrders=null;
-  try{const {data}=await request(`https://${host}/admin/oauth/access_scopes.json`,{headers:{'X-Shopify-Access-Token':auth.access_token}},'Shopify access scopes');readAllOrders=Array.isArray(data.access_scopes)?data.access_scopes.some(s=>s.handle==='read_all_orders'):null;}catch{}
+  let readAllOrders=null,readPaymentPayouts=null;
+  try{const {data}=await request(`https://${host}/admin/oauth/access_scopes.json`,{headers:{'X-Shopify-Access-Token':auth.access_token}},'Shopify access scopes');readPaymentPayouts=Array.isArray(data.access_scopes)?data.access_scopes.some(s=>s.handle==='read_shopify_payments_payouts'):null;readAllOrders=Array.isArray(data.access_scopes)?data.access_scopes.some(s=>s.handle==='read_all_orders'):null;}catch{}
   let url=`https://${host}/admin/api/${env.SHOPIFY_API_VERSION||'2026-01'}/orders.json?status=any&limit=250&created_at_min=${encodeURIComponent(start)}`,all=[],pages=0;
   while(url){if(++pages>100)throw Error('Shopify page limit: incomplete import');const u=new URL(url);if(u.host!==host)throw Error('Unsafe Shopify pagination URL');const r=await request(url,{headers:{'X-Shopify-Access-Token':auth.access_token}},'Shopify orders');if(!Array.isArray(r.data.orders))throw Error('Shopify orders: unexpected response');all.push(...r.data.orders);url=r.headers.get('link')?.match(/<([^>]+)>; rel="next"/)?.[1]||null;await pause(550);}
-  all.coverage={readAllOrders,oldestOrder:all.map(o=>businessDate(o.created_at)).filter(Boolean).sort()[0]||null};
+  all.coverage={readAllOrders,readPaymentPayouts,oldestOrder:all.map(o=>businessDate(o.created_at)).filter(Boolean).sort()[0]||null};
   return all;
 }
 async function reverbOrders(env,shop,start){
