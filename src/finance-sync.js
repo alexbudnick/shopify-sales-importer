@@ -47,7 +47,7 @@ export function normalizeShopify(o) {
   const lines=(o.line_items||[]).map(l=>{
     if(!l.id)throw Error('Shopify line missing stable ID');
     const discounts=sum((l.discount_allocations||[]).map(x=>x.amount));
-    return { 'Line Key':`${key}:${l.id}`,'Order Key':key,'SKU':String(l.sku||''),'Item':String(l.title||l.name||''),'Quantity':Number(l.quantity)||0,'Sale Amount':Math.round(((money(l.price)||0)*(Number(l.quantity)||0)-discounts)*100)/100,'Cost Status':'Not snapshotted — do not infer profit'};
+    return { 'Line Key':`${key}:${l.id}`,'Order Key':key,'SKU':String(l.sku||''),'Product ID':l.product_id?String(l.product_id):'','Item':String(l.title||l.name||''),'Quantity':Number(l.quantity)||0,'Sale Amount':Math.round(((money(l.price)||0)*(Number(l.quantity)||0)-discounts)*100)/100,'Cost Status':'Not snapshotted — do not infer profit'};
   });
   return {fields,report,lines,refundTax};
 }
@@ -62,7 +62,9 @@ export function normalizeReverb(o,shop) {
   let report=['paid','shipped','picked_up','received','completed','delivered'].includes(status)?'Needs review':'Unpaid — excluded';
   if(/cancel|refund/.test(status))report='Cancelled — excluded';
   const sku=String(o.sku||o.listing?.sku||'').replace(/^.*?([ACT]\d{8}[A-Z0-9]*)$/i,'$1');
-  return {fields,report,lines:[{'Line Key':`${key}:item`,'Order Key':key,'SKU':sku,'Item':String(o.title||o.listing?.title||''),'Quantity':Number(o.quantity)||1,...(subtotal!==null?{'Sale Amount':subtotal}:{}),'Cost Status':'Not snapshotted — do not infer profit'}]};
+  const listing=o.listing||{},rawPhotos=listing.photos||o.photos||(o._links?.photo?[{url:o._links.photo.href}]:[]),urls=Array.isArray(rawPhotos)?rawPhotos.map(p=>p.url||p.src||p._links?.large_crop?.href||p._links?.large?.href||p._links?.full?.href).filter(u=>/^https:\/\//.test(u||'')):[];
+  const listingEvidence={...(urls.length?{'Listing Photo URLs':JSON.stringify(urls)}:{}),...(listing.published_at?{'Source Listing Date':businessDate(listing.published_at)}:{}),...(money(listing.price)!==null?{'Source Listed Price':money(listing.price)}:{})};
+  return {fields,report,lines:[{'Line Key':`${key}:item`,'Order Key':key,'SKU':sku,'Item':String(o.title||o.listing?.title||''),'Quantity':Number(o.quantity)||1,...listingEvidence,...(subtotal!==null?{'Sale Amount':subtotal}:{}),'Cost Status':'Not snapshotted — do not infer profit'}]};
 }
 export function normalizePayPal(d) {
   const t=d.transaction_info||{},id=t.transaction_id,code=t.transaction_event_code;
