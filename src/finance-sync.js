@@ -1,3 +1,4 @@
+import { syncShopifyPayments } from './finance-settlements.js';
 import { syncShipping } from './finance-shipping.js';
 import { syncFinanceReporting } from './finance-reporting.js';
 import { createHash } from 'node:crypto';
@@ -315,6 +316,7 @@ export async function runFinanceSync(env=process.env){
         const changedLines=changedRows(lines,lineIndex,'Line Key');await at.upsert(TABLES.lines,'Line Key',changedLines);
         report.sources[source]={read:raw.length,ordersWritten:changed.length,linesWritten:changedLines.length,...(raw.coverage?{coverage:raw.coverage}:{})};
         console.log('FINANCE_STAGE',source,JSON.stringify(report.sources[source]));
+        if(source==='Shopify'){try{report.sources.ShopifyPayments=await syncShopifyPayments(at,env,start,raw.coverage?.readPaymentPayouts);}catch(e){report.errors.push(`Shopify Payments: ${e.message}`);}}
       }catch(e){report.errors.push(`${source}: ${e.message}`);}
     }
     try{
