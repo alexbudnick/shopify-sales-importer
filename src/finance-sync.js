@@ -1,3 +1,4 @@
+import { syncFinanceReporting } from './finance-reporting.js';
 import { createHash } from 'node:crypto';
 
 const BASE = 'app7b0v3wEXudVmkD';
@@ -323,6 +324,7 @@ export async function runFinanceSync(env=process.env){
       const grouped=await linkPayPalOrders(at);
       report.sources.PayPal={read:raw.length,unique:dedup.size,written:changed.length,...grouped,reporting:'Payment summaries — order review required'};
     }catch(e){report.errors.push(`PayPal: ${e.message}`);}
+    try{console.log('FINANCE_STAGE','Building financial dashboard');report.sources.Reporting=await syncFinanceReporting(at,airtable(token,'app2DxCRaxnHQL3zR'));}catch(e){report.errors.push(`Reporting: ${e.message}`);}
     await at.create(TABLES.log,{'Run ID':`FINANCE-${new Date().toISOString()}`,'Source':'Finance sync','Run Date':new Date().toISOString().slice(0,10),'Status':report.errors.length?'Needs attention':'Imported — review pending','Records Read':Object.values(report.sources).reduce((a,s)=>a+s.read,0),'Records Written':Object.values(report.sources).reduce((a,s)=>a+(s.ordersWritten||s.written||0),0),'Errors':JSON.stringify(report)});
   }catch(e){report.errors.push(e.message);}
   finally{running=false;}
