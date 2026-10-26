@@ -7,7 +7,7 @@ export function saleEconomics(ledger,orders,lines,paypal,inventory,estimates=[])
  const inv=new Map();for(const r of inventory){const sku=String(r.fields.SKU||'').trim();if(!sku)continue;if(!inv.has(sku))inv.set(sku,[]);inv.get(sku).push(r);}
  const estimateMap=new Map();for(const r of estimates){const f=r.fields||r,sku=String(f.SKU||'').trim();if(!sku)continue;if(!estimateMap.has(sku))estimateMap.set(sku,[]);estimateMap.get(sku).push(f);}
  // Never repeat an item-total payout across multiple positive sale orders or quantities.
- const soldOrders=new Map();for(const r of lines){const f=r.fields,sku=String(f.SKU||'').trim();if(!sku)continue;if(!soldOrders.has(sku))soldOrders.set(sku,new Set());soldOrders.get(sku).add(f['Order Key']);}
+ const soldOrders=new Map();for(const r of lines){const f=r.fields,sku=String(f.SKU||'').trim();if(!sku)continue;if(!soldOrders.has(sku))soldOrders.set(sku,new Set());soldOrders.get(sku).add(f['Order Key']+'|'+f['Line Key']);}
  const result=[];
  for(const sale of ledger.filter(f=>f.Type==='Sale'&&f.Sales!==0)){
   let orderKey=sale.Description;
