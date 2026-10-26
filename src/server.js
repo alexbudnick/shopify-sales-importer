@@ -1,10 +1,12 @@
-import express from "express";\nimport { attachFinanceDashboard } from "./finance-dashboard-api.js";
+import express from "express";
+import { attachFinanceDashboard } from "./finance-dashboard-api.js";
 import dotenv from "dotenv";
 import Airtable from "airtable";
 
 dotenv.config();
 
-const app = express();\nattachFinanceDashboard(app);
+const app = express();
+attachFinanceDashboard(app);
 const PORT = process.env.PORT || 3000;
 
 const CFG = {
