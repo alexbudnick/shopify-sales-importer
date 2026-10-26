@@ -1,7 +1,7 @@
 const T={ledger:'tblqJdpBfUuewMpOy',snapshots:'tblDLIpjp2IOpL2JN',months:'tblQlmnTA9be5P5jZ'};
 const n=x=>Number(x)||0;
 const round=x=>Math.round(x*100)/100;
-export function buildReporting(bank,orders,paypal){
+export function buildReporting(bank,orders,paypal,receipts=[]){
  const result=[];
  const add=f=>result.push({'Sales':0,'Spending':0,'Checking In':0,'Checking Out':0,'Checking Net':0,'Needs Review':0,'Sales Channel':'','Expense Category':'','Reporting Note':'',...f,Month:String(f.Date||'').slice(0,7)});
  for(const {fields:f} of bank){
@@ -40,6 +40,12 @@ export function buildReporting(bank,orders,paypal){
   const verified=f.Currency==='USD'&&String(f['Report Match']||'').startsWith('Matched');
   add({'Reporting Key':'PP-CREDIT:'+f['Transaction Key'],Date:f.Date,Type:'PayPal Credit purchase','Expense Category':category,Source:'PayPal Credit',Description:f['Report Counterparty']||original?.['Report Counterparty']||'',Spending:verified?-n(f['Gross Amount']):0,'Needs Review':!verified||category==='Needs review'?1:0,'Reporting Note':refund?'Refund of a credit-funded purchase; reduces spending.':'Credit-funded purchase; funding and repayments excluded. Category/tax treatment is separate from cash flow.'});
  }
+ for(const {fields:f} of receipts){
+  if(!/cash/i.test(f['Payment Account']||'')||!f.Date||/personal/i.test(f['Business / Personal']||''))continue;
+  const amount=typeof f['Settled USD']==='number'?f['Settled USD']:f.Currency==='USD'&&typeof f['Original Amount']==='number'?f['Original Amount']:null;
+  const category=/inventory/i.test(f.Category||'')?'Inventory (COGS)':/travel|taxi|train/i.test(f.Category||'')?'Travel':'Needs review';
+  add({'Reporting Key':'CASH-RECEIPT:'+f['Purchase ID'],Date:f.Date,Type:'Cash purchase','Expense Category':category,Source:'Sourcing cash receipt',Description:f.Vendor||'',Spending:amount||0,'Needs Review':amount===null||category==='Needs review'?1:0,'Reporting Note':amount===null?'USD cost not settled; estimated exchange values excluded.':'Cash purchase, counted once; not a bank withdrawal.'});
+ }
  return result;
 }
 export function monthlyReporting(ledger,snapshots=[],now=new Date()){
@@ -61,7 +67,8 @@ export function inventorySnapshot(rows,date,now=new Date()){
 }
 export async function syncFinanceReporting(at,inventory,now=new Date()){
  const bank=await at.all('tbllyk6vCuaP2wYiF'),orders=await at.all('tblJF93j14JRV8d5y'),paypal=await at.all('tblLfxT9f4TQmXYWw');
- const ledger=buildReporting(bank,orders,paypal),existing=await at.all(T.ledger),map=new Map(existing.map(r=>[r.fields['Reporting Key'],r.fields]));
+ const receipts=await at.all('tblblwbHmUit1mg3Z');
+ const ledger=buildReporting(bank,orders,paypal,receipts),existing=await at.all(T.ledger),map=new Map(existing.map(r=>[r.fields['Reporting Key'],r.fields]));
  const changed=ledger.filter(f=>JSON.stringify(f)!==JSON.stringify(Object.fromEntries(Object.keys(f).map(k=>[k,map.get(f['Reporting Key'])?.[k]??(typeof f[k]==='number'?0:'')]))));
  // Upsert stable keys; zero stale rows rather than leave outdated totals visible.
  const active=new Set(ledger.map(f=>f['Reporting Key']));for(const r of existing)if(!active.has(r.fields['Reporting Key']))changed.push({'Reporting Key':r.fields['Reporting Key'],Sales:0,Spending:0,'Checking In':0,'Checking Out':0,'Checking Net':0,'Needs Review':0,'Reporting Note':'Source no longer eligible'});
