@@ -9,8 +9,10 @@ export function buildReporting(bank,orders,paypal,receipts=[]){
   add({'Reporting Key':'BANK:'+f.ID,Date:f.Date,Type:'Bank',Source:'Chase / Amex',Description:f.Summary||'',Spending:n(f['Preliminary Spending']),'Expense Category':f['Reporting Expense Category']||'Needs review','Checking In':n(f['Checking Cash In']),'Checking Out':n(f['Checking Cash Out']),'Checking Net':n(f['Checking Cash Movement']),'Needs Review':f['Reporting Expense Category']==='Needs review'?1:0});
  }
  const ppChannels={'Invoice payment':'PayPal — Invoices','Show POS sale':'PayPal — Show POS','Direct PayPal sale':'PayPal — Direct','Bricklink sale':'Bricklink','Customer refund':'PayPal — Refunds'};
+ const activityIndex=new Map(paypal.map(r=>[r.fields['Transaction ID'],r.fields]));
  for(const {fields:f} of paypal){
-  const channel=ppChannels[f['Activity Class']];
+  const originalClass=f['Activity Class']==='Customer refund'?activityIndex.get(f['Reference ID'])?.['Activity Class']:null;
+  const channel=ppChannels[originalClass||f['Activity Class']];
   if(!channel||f.Currency!=='USD'||!f.Date)continue;
   const verified=String(f['Report Match']||'').startsWith('Matched');
   add({'Reporting Key':'PP-SALE:'+f['Transaction Key'],Date:f.Date,Type:'Sale','Sales Channel':channel,Source:'PayPal',Description:f['Report Counterparty']||'PayPal receipt',Sales:verified?round(n(f['Gross Amount'])-Math.sign(n(f['Gross Amount']))*Math.abs(n(f['Report Tax']))):0,'Needs Review':verified?0:1,'Reporting Note':verified?'Payment date; reported tax excluded; before fees.':'Unverified PayPal tax/source details; held out of sales.'});
@@ -23,7 +25,8 @@ export function buildReporting(bank,orders,paypal,receipts=[]){
   const amounts=typeof f['Items Subtotal']==='number'&&typeof f['Shipping Charged']==='number';
   const currency=f.Currency==='USD';
   const knownChannel=!!f['Sales Channel'];
-  const blocked=!!f['Import Warnings']&&!String(f['Order Key']).startsWith('GXE:')&&f['Import Source']!=='Gear Exchange API';
+  const gxe=f['Import Source']==='Gear Exchange API';
+  const blocked=gxe?/amounts do not reconcile/.test(f['Import Warnings']||''):!!f['Import Warnings'];
   const include=!excluded&&validStatus&&amounts&&currency&&knownChannel&&!blocked;
   add({'Reporting Key':'SALE:'+f['Order Key'],Date:f['Order Date'],Type:'Sale','Sales Channel':f['Sales Channel']||'Unverified channel',Source:f['Import Source']||'',Description:f['Order Key'],Sales:include?round(n(f['Items Subtotal'])+n(f['Shipping Charged'])-n(f['Refund Amount'])):0,'Needs Review':!excluded&&!include?1:/refund/i.test(f.Status||'')?1:0,'Reporting Note':include?'Paid source order; tax excluded, before fees.':'Held out: '+(f['Import Warnings']||f['Report Status']||f.Status)});
  }
