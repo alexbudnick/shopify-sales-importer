@@ -29,9 +29,14 @@ export function buildReporting(bank,orders,paypal,receipts=[]){
   const blocked=gxe?/amounts do not reconcile/.test(f['Import Warnings']||''):!!f['Import Warnings'];
   const include=!excluded&&validStatus&&amounts&&currency&&knownChannel&&!blocked;
   add({'Reporting Key':'SALE:'+f['Order Key'],Date:f['Order Date'],Type:'Sale','Sales Channel':f['Sales Channel']||'Unverified channel',Source:f['Import Source']||'',Description:f['Order Key'],Sales:include?round(n(f['Items Subtotal'])+n(f['Shipping Charged'])-n(f['Refund Amount'])):0,'Needs Review':!excluded&&!include?1:/refund/i.test(f.Status||'')?1:0,'Reporting Note':include?'Paid source order; tax excluded, before fees.':'Held out: '+(f['Import Warnings']||f['Report Status']||f.Status)});
+  if(include&&String(f['Order Key']).startsWith('REVERB-')){
+   const fees=round(n(f['Platform Fees'])+n(f['Processing Fees']));
+   if(fees)add({'Reporting Key':'FEES:'+f['Order Key'],Date:f['Order Date'],Type:'Marketplace fees','Expense Category':'Commissions and fees',Source:f['Import Source'],Description:f['Order Key'],Spending:fees,'Reporting Note':'Source-reported fees deducted from marketplace settlement; order-date basis.'});
+   if(n(f['Shipping Label Fees']))add({'Reporting Key':'LABEL:'+f['Order Key'],Date:f['Order Date'],Type:'Marketplace shipping','Expense Category':'Shipping',Source:f['Import Source'],Description:f['Order Key'],Spending:n(f['Shipping Label Fees']),'Reporting Note':'Source-reported marketplace label charge; order-date basis.'});
+  }
  }
  const index=new Map(paypal.map(r=>[r.fields['Transaction ID'],r.fields]));
- const funded=new Set(paypal.filter(r=>r.fields['Report Description']==='BML Credit - Transfer from BML'&&n(r.fields['Gross Amount'])>0).map(r=>r.fields['Reference ID']));
+ const funded=new Set(paypal.filter(r=>(r.fields['Report Description']==='BML Credit - Transfer from BML'||r.fields['Event Code']==='T1601')&&n(r.fields['Gross Amount'])>0).map(r=>r.fields['Reference ID']));
  // Only credit-funded purchases: bank-funded PayPal purchases already appear in the bank ledger.
  for(const {fields:f} of paypal){
   const purchase=funded.has(f['Transaction ID']);
@@ -40,8 +45,11 @@ export function buildReporting(bank,orders,paypal,receipts=[]){
   const original=refund?index.get(f['Reference ID']):f;
   const vendor=String(original?.['Report Counterparty']||'').toLowerCase();
   const category=f['Expense Category Override']||(/reverb|tenso|buyee/.test(vendor)?'Inventory (COGS)':'Needs review');
-  const verified=f.Currency==='USD'&&String(f['Report Match']||'').startsWith('Matched');
+  const verified=f.Currency==='USD'&&(f.Status==='S'||String(f['Report Match']||'').startsWith('Matched'));
   add({'Reporting Key':'PP-CREDIT:'+f['Transaction Key'],Date:f.Date,Type:'PayPal Credit purchase','Expense Category':category,Source:'PayPal Credit',Description:f['Report Counterparty']||original?.['Report Counterparty']||'',Spending:verified?-n(f['Gross Amount']):0,'Needs Review':!verified||category==='Needs review'?1:0,'Reporting Note':refund?'Refund of a credit-funded purchase; reduces spending.':'Credit-funded purchase; funding and repayments excluded. Category/tax treatment is separate from cash flow.'});
+ }
+ for(const {fields:f} of paypal){
+  if(f.Currency==='USD'&&f.Status==='S'&&n(f['Fee Amount'])<0)add({'Reporting Key':'PP-FEE:'+f['Transaction Key'],Date:f.Date,Type:'Payment processing fees','Expense Category':'Commissions and fees',Source:'PayPal',Description:f['Report Counterparty']||f['Transaction ID'],Spending:-n(f['Fee Amount']),'Reporting Note':'Source-reported PayPal fee, separate from gross sales and credit funding.'});
  }
  for(const {fields:f} of receipts){
   if(!/cash/i.test(f['Payment Account']||'')||!f.Date||/personal/i.test(f['Business / Personal']||''))continue;
