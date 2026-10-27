@@ -1,7 +1,7 @@
 import { SALE_REVIEW_TABLE, reviewCostOverrides, syncSaleReviews } from './finance-sale-review.js';
 import { syncBusinessDays } from './finance-model.js';
 const n=x=>Number(x)||0,round=x=>Math.round(x*100)/100;
-const ownerType=x=>!x||/^(unknown|other|\d+|INS_.+)$/i.test(x)?'Unknown':/^(ff|ff owned|owned|a flash flood)/i.test(x)?'Owned':/split|50\/50|shared/i.test(x)?'Shared / split':'Consigned';
+const ownerType=x=>!x||/^(unknown|other|\d+|INS_.+)$/i.test(x)?'Unknown':/^(ff|ff owned|owned|a flash flood)/i.test(x)?'Owned':/split|50\/50|shared|tokai\s*parts/i.test(x)?'Shared / split':'Consigned';
 export function saleEconomics(ledger,orders,lines,paypal,inventory,estimates=[]){
  const byKey=new Map(orders.map(r=>[r.fields['Order Key'],r])),byId=new Map(orders.map(r=>[r.id,r]));
  const pp=new Map(paypal.map(r=>[r.fields['Transaction Key'],r.fields]));
@@ -36,8 +36,9 @@ export function saleEconomics(ledger,orders,lines,paypal,inventory,estimates=[])
    else if(ownership==='Owned'&&typeof f['Unit Cost at Sale']==='number'){cost=round(f['Unit Cost at Sale']*qty*receiptFactor);basis='Recorded sale-time cost';}
    else if(ownership==='Consigned'&&estimate&&qty===1&&soldOrders.get(String(f.SKU||'').trim())?.size===1){estimatedPayout=round(estimate['Estimated Consignment Payout']*receiptFactor);cost=estimatedPayout;basis='Management estimate: consignment payout; not tax-basis COGS';}
    else if(matchedCost!==null){cost=round(matchedCost*receiptFactor);basis='Provisional: matched current inventory cost';}
+   if(cost===null&&ownership==='Consigned'){const salePrice=order&&typeof order['Items Subtotal']==='number'?Math.max(0,order['Items Subtotal']*share):typeof f['Sale Amount']==='number'?Math.max(0,f['Sale Amount']):Math.max(0,revenue/Math.max(receiptFactor,1e-9));estimatedPayout=round(salePrice*.7*receiptFactor);cost=estimatedPayout;basis='Automatic consignment estimate: 70% of final item sale price';}
    if(cost===null){cost=0;basis='Item estimate not entered — $0';}
-   const provisional=basis.startsWith('Management estimate')||basis.startsWith('Provisional')||sale.Sales<0||!f['Sale Ownership Override']&&!f['Owner at Sale'];
+   const provisional=basis.startsWith('Automatic consignment estimate')||basis.startsWith('Management estimate')||basis.startsWith('Provisional')||sale.Sales<0||!f['Sale Ownership Override']&&!f['Owner at Sale'];
    result.push({'Economics Key':sale['Reporting Key']+'|'+f['Line Key'],Date:sale.Date,Month:sale.Month,'Order Key':orderKey||'','Line Key':f['Line Key'],SKU:f.SKU||'',Item:f.Item||'','Sales Channel':sale['Sales Channel'],Ownership:ownership,'Net Sales':revenue,'Known COGS':cost,'Estimated Consignment Payout':estimatedPayout,'Item Cost Excluding Estimates':cost===null?null:round(cost-estimatedPayout),'Gross Profit on Costed Sales':cost===null?null:round(revenue-cost),'Sales Missing Cost':cost===null?Math.max(0,revenue):0,'Matched Current Inventory Cost':matchedCost,'Cost Basis':basis+(provisional?' · historical ownership/cost review':''),'Needs Review':cost===null||provisional?1:0});
   }
  }
@@ -95,3 +96,4 @@ export function monthlyDashboardRows(ledger,economics,profitRows,financeRows,per
  for(const f of economics)add(f.Month,'Ownership',f.Ownership,'Ownership','Ownership Sales',n(f['Net Sales']));
  return result.concat([...groups.values()]).filter(f=>f.Period[0]);
 }
+
