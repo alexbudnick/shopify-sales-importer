@@ -1,3 +1,4 @@
+import {deflateSync} from 'node:zlib';
 import { syncProfit } from './finance-pnl.js';
 const T={ledger:'tblqJdpBfUuewMpOy',snapshots:'tblDLIpjp2IOpL2JN',months:'tblQlmnTA9be5P5jZ'};
 const n=x=>Number(x)||0;
@@ -75,7 +76,9 @@ export function monthlyReporting(ledger,snapshots=[],now=new Date()){
 export function inventorySnapshot(rows,date,now=new Date()){
  const f={'Snapshot Date':date,'Captured At':now.toISOString(),'Units On Hand':0,'Owned Units':0,'Missing Cost Units':0,'Owned Inventory Cost':0,'Inventory List Value':0,Coverage:'Observed stock; owned cost excludes consignments. Missing costs not estimated.'};
  for(const {fields:r}of rows){const qty=Math.max(0,n(r['Qty On Hand']));if(!qty)continue;f['Units On Hand']+=qty;f['Inventory List Value']+=qty*n(r.Price);const owner=String(r.Owner||'');if(/^(FF|FF Owned|A Flash Flood)/i.test(owner)){f['Owned Units']+=qty;if(typeof r.Cost==='number')f['Owned Inventory Cost']+=qty*r.Cost;else f['Missing Cost Units']+=qty;}}
- f['Owned Inventory Cost']=round(f['Owned Inventory Cost']);f['Inventory List Value']=round(f['Inventory List Value']);return f;
+ f['Owned Inventory Cost']=round(f['Owned Inventory Cost']);f['Inventory List Value']=round(f['Inventory List Value']);
+ const items=rows.filter(r=>n(r.fields['Qty On Hand'])>0).map(r=>[r.fields.SKU||'',r.fields.Name||r.fields.Item||r.fields.SKU||'Inventory item',r.fields.Owner||'',n(r.fields['Qty On Hand']),n(r.fields.Price),round(n(r.fields['Qty On Hand'])*n(r.fields.Price)),r.id||'']);
+ const detail='deflate:'+deflateSync(JSON.stringify(items)).toString('base64');f['Inventory Detail']=detail.length<95000?detail:'';return f;
 }
 export async function syncFinanceReporting(at,inventory,now=new Date()){
  const bank=await at.all('tbllyk6vCuaP2wYiF'),orders=await at.all('tblJF93j14JRV8d5y'),paypal=await at.all('tblLfxT9f4TQmXYWw');
@@ -91,3 +94,4 @@ export async function syncFinanceReporting(at,inventory,now=new Date()){
  if(inventoryRows)profitCoverage=await syncProfit(at,ledger,orders,paypal,inventoryRows);
  return {read:bank.length+orders.length+paypal.length,written:changed.length,inventoryCoverage,profitCoverage};
 }
+
